@@ -68,13 +68,32 @@ Check the host first:
 Create the local environment and install the Python package:
 
 ```bash
+conda deactivate 2>/dev/null || true
 ./scripts/setup_env.sh
 source .venv/bin/activate
+python --version
 ```
 
-The script uses the selected `python3` interpreter. On a standard Ubuntu 24.04
-ROS workstation, that should be Python 3.12. Set `PYTHON_BIN=/path/to/python`
-before running the script to choose another interpreter.
+On Ubuntu, the script defaults to `/usr/bin/python3` so an active Conda
+installation cannot silently create an incompatible environment. It also
+recreates `.venv` automatically if that directory was built with another Python
+interpreter. Set `PYTHON_BIN=/path/to/python` before running the script to make
+an intentional override. Creating the environment requires the Ubuntu
+`python3-venv` package or the `uv` command; install the former with
+`sudo apt install python3-venv` if neither is available.
+
+Keep the standalone Python environment separate from the ROS 2 environment. If
+possible, use a clean shell for the standalone tests. The project configuration
+blocks ROS launch-testing plugins from the unit-test run, so this sequence also
+works after ROS has been sourced:
+
+```bash
+deactivate 2>/dev/null || true
+conda deactivate 2>/dev/null || true
+./scripts/setup_env.sh
+source .venv/bin/activate
+pytest
+```
 
 ### ROS 2 Jazzy
 
