@@ -1,0 +1,74 @@
+lidar:
+  frame_id: robot_lidar
+  parent_frame: robot_base
+  model: rotating_3d
+  horizontal_fov_deg: 360.0
+  vertical_fov_deg: 40.0
+  horizontal_resolution_deg: 0.2
+  vertical_channels: 64
+  min_range_m: 0.3
+  max_range_m: 50.0
+  range_noise_std_m: 0.01
+  latency_ms: 20.0
+  extrinsics:
+    translation_m: [0.0, 0.0, 0.35]
+    rpy_deg: [0.0, 0.0, 0.0]
+
+grid_imu:
+  frame_id: grid_imu
+  parent_frame: grid
+  accelerometer_noise_std_mps2: 0.015
+  gyroscope_noise_std_radps: 0.001
+  accelerometer_bias_std_mps2: 0.02
+  gyroscope_bias_std_radps: 0.002
+  bias_random_walk: 0.0001
+  latency_ms: 5.0
+  extrinsics:
+    translation_m: [0.0, 0.0, 0.0]
+    rpy_deg: [0.0, 0.0, 0.0]
+
+robot_imu:
+  frame_id: robot_imu
+  parent_frame: robot_base
+  accelerometer_noise_std_mps2: 0.02
+  gyroscope_noise_std_radps: 0.002
+  accelerometer_bias_std_mps2: 0.03
+  gyroscope_bias_std_radps: 0.003
+  bias_random_walk: 0.0002
+  latency_ms: 5.0
+  extrinsics:
+    translation_m: [0.0, 0.0, 0.12]
+    rpy_deg: [0.0, 0.0, 0.0]
+
+motor_encoders:
+  counts_per_revolution: 4096
+  noise_std_counts: 0.25
+  latency_ms: 2.0
+
+linear_rail_encoders:
+  resolution_m: 0.0001
+  noise_std_m: 0.00005
+  latency_ms: 2.0
+
+module_joint_encoders:
+  resolution_rad: 0.0002
+  noise_std_rad: 0.0001
+  latency_ms: 3.0
+
+distance_sensors:
+  frame_prefix: grid_distance
+  min_range_m: 0.05
+  max_range_m: 3.0
+  noise_std_m: 0.003
+  latency_ms: 10.0
+  extrinsics:
+    translation_m: [0.0, 0.0, 0.0]
+    rpy_deg: [0.0, 0.0, 0.0]
+
+homing_switches:
+  latency_ms: 2.0
+  normally_closed: true
+
+module_state_sensors:
+  latency_ms: 10.0
+  states: [unknown, folded, deploying, locked, fault]

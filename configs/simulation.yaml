@@ -1,0 +1,20 @@
+scenario_name: simple_facade_mvp
+simulation_frequency_hz: 240.0
+render_frequency_hz: 30.0
+duration_s: 20.0
+random_seed: 42
+noise:
+  enabled: true
+  apply_bias: true
+  apply_latency: false
+publishing_rates_hz:
+  lidar: 10.0
+  grid_imu: 100.0
+  robot_imu: 200.0
+  motor_encoders: 100.0
+  linear_rail_encoders: 100.0
+  module_joint_encoders: 50.0
+  distance_sensors: 20.0
+  homing_switches: 20.0
+  module_state_sensors: 10.0
+  transforms: 50.0

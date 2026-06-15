@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local environments
+.venv/
+venv/
+.env
+
+# ROS 2 / colcon
+build/
+install/
+log/
+
+# Isaac Sim and generated simulation data
+.isaac_sim/
+_build/
+*.usd~
+*.usda~
+*.usdc~
+*.log
+
+# Editors and operating systems
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Generated datasets and recordings
+*.bag
+*.db3
+*.mcap
+outputs/
+recordings/

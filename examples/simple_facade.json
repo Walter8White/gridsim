@@ -1,0 +1,12 @@
+{
+  "frame_id": "facade",
+  "width_m": 8.0,
+  "height_m": 5.0,
+  "normal": [0.0, 0.0, 1.0],
+  "offset_m": 0.0,
+  "anchor_points": {
+    "anchor_0": [0.5, 0.5, 0.0],
+    "anchor_1": [7.5, 0.5, 0.0],
+    "anchor_2": [0.5, 4.5, 0.0]
+  }
+}

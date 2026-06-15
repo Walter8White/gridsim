@@ -1,0 +1,25 @@
+frame_id: facade
+dimensions_m:
+  width: 8.0
+  height: 5.0
+plane:
+  normal: [0.0, 0.0, 1.0]
+  offset_m: 0.0
+anchor_points:
+  - id: anchor_0
+    position_m: [0.5, 0.5, 0.0]
+  - id: anchor_1
+    position_m: [7.5, 0.5, 0.0]
+  - id: anchor_2
+    position_m: [0.5, 4.5, 0.0]
+  - id: anchor_3
+    position_m: [7.5, 4.5, 0.0]
+target_points:
+  - id: target_0
+    position_m: [2.0, 2.0, 0.0]
+  - id: target_1
+    position_m: [6.0, 2.0, 0.0]
+forbidden_zones:
+  - id: window_0
+    min_corner_m: [3.0, 1.0, -0.1]
+    max_corner_m: [5.0, 3.0, 0.1]

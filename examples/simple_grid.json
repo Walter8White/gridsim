@@ -1,0 +1,10 @@
+{
+  "frame_id": "grid",
+  "rows": 4,
+  "columns": 6,
+  "module_width_m": 1.0,
+  "module_height_m": 1.0,
+  "facade_standoff_m": 1.25,
+  "wheel_radius_m": 0.08,
+  "wheel_separation_m": 0.42
+}

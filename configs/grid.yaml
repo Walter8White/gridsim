@@ -1,0 +1,25 @@
+frame_id: grid
+rows: 4
+columns: 6
+module:
+  width_m: 1.0
+  height_m: 1.0
+  depth_m: 0.08
+  states:
+    unknown: 0
+    folded: 1
+    deploying: 2
+    locked: 3
+    fault: 4
+  initial_state: locked
+
+deployment_error:
+  translation_std_m: [0.005, 0.005, 0.01]
+  rotation_std_deg: [0.2, 0.2, 0.3]
+  joint_angle_std_deg: 0.15
+
+structure:
+  nominal_stiffness_n_per_m: 500000.0
+  joint_stiffness_nm_per_rad: 12000.0
+  max_expected_flexion_m: 0.02
+  max_expected_tilt_deg: 2.0
