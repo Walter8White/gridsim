@@ -1,6 +1,8 @@
 frame_id: grid
 rows: 4
 columns: 6
+facade_standoff_m: 1.25
+mass_kg: 180.0
 module:
   width_m: 1.0
   height_m: 1.0

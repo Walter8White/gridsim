@@ -162,6 +162,14 @@ Both processes must use the same `ROS_DOMAIN_ID`. The initial integration will
 connect Isaac Sim RTX LiDAR and IMU publishers to `gridsim_ros`, followed by
 encoder and distance-sensor topics.
 
+The first config-driven scene is available in [`isaac/`](isaac/README.md). Run a
+bounded headless smoke test with:
+
+```bash
+source /opt/ros/jazzy/setup.bash
+./isaac/run_mvp.sh --headless --test --no-lidar
+```
+
 ## Architecture
 
 - `src/gridsim_core`: coordinate transforms and physical state containers

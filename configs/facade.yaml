@@ -2,6 +2,7 @@ frame_id: facade
 dimensions_m:
   width: 8.0
   height: 5.0
+mass_kg: 1000000000.0
 plane:
   normal: [0.0, 0.0, 1.0]
   offset_m: 0.0
