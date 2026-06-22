@@ -4,7 +4,6 @@ import pytest
 
 from gridsim_core.scene_config import MvpSceneConfig
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -18,4 +17,4 @@ def test_mvp_scene_config_loads_repository_yaml() -> None:
     assert config.facade_standoff_m == pytest.approx(1.25)
     assert config.facade_mass_kg == pytest.approx(1_000_000_000.0)
     assert config.grid_mass_kg == pytest.approx(180.0)
-    assert config.lidar_rate_hz == pytest.approx(10.0)
+    assert config.simulation_frequency_hz == pytest.approx(240.0)

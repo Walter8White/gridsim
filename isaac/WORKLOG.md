@@ -24,10 +24,13 @@
 - ROS 2 publishes `/clock`, both IMU topics, and the complete transform chain:
   `world -> facade -> grid -> robot_base -> tool`.
 - The RTX LiDAR publishes `sensor_msgs/msg/PointCloud2` on
-  `/robot/lidar/points` with frame `robot_lidar`.
+  `/grid/lidar/points` with frame `grid_lidar`.
 - The scene now exports a ground collider, explicit gravity, facade/grid mass
   properties, a dynamic hollow frame-style grid, and a facade-facing robot
   nose/tool.
+- The robot is mounted on the facade-facing side of the grid, with a
+  facade-facing depth-camera placeholder on the robot and the HESAI XT32 SD10
+  LiDAR asset mounted on the grid module above it.
 - Keep the `LidarSensor` Python object alive for the full simulation loop.
   Releasing it also releases its render product and ROS writer.
 - The first RTX launch may spend about a minute compiling shaders. Later

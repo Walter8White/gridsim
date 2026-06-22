@@ -1,0 +1,20 @@
+{
+  "source_step": "/home/emilien/deploya/gridsim/assets/cad/grid/horizontal rail.step",
+  "generated_from": "STEP via CadQuery; mesh centered and rotated so long axis is local Y",
+  "asset_units": "millimeters",
+  "scene_unit_scale": 0.001,
+  "long_axis": "Y",
+  "length_asset_units": 2000.0,
+  "length_m": 2.0,
+  "width_m": 0.082,
+  "height_m": 2.0,
+  "depth_m": 0.07,
+  "bbox_asset_units": {
+    "xmin": -41.0,
+    "ymin": -1000.0,
+    "zmin": -35.0,
+    "xmax": 41.0,
+    "ymax": 1000.0,
+    "zmax": 35.0
+  }
+}
