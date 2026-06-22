@@ -1,0 +1,20 @@
+{
+  "source_step": "/home/emilien/deploya/gridsim/assets/cad/grid/carriage.step",
+  "generated_from": "STEP via CadQuery; mesh centered, original CAD orientation preserved",
+  "asset_units": "millimeters",
+  "scene_unit_scale": 0.001,
+  "long_axis": "Z",
+  "length_asset_units": 80.0,
+  "length_m": 0.08,
+  "width_m": 0.06,
+  "height_m": 0.023999996185302734,
+  "depth_m": 0.08,
+  "bbox_asset_units": {
+    "xmin": -30.0,
+    "ymin": -11.999998092651367,
+    "zmin": -40.0,
+    "xmax": 30.0,
+    "ymax": 11.999998092651367,
+    "zmax": 40.0
+  }
+}
