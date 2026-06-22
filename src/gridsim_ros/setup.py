@@ -24,6 +24,10 @@ setup(
             "sim_state_publisher = gridsim_ros.sim_state_publisher:main",
             "sensor_noise_node = gridsim_ros.sensor_noise_node:main",
             "calibration_node = gridsim_ros.calibration_node:main",
+            "teleop_robot = gridsim_ros.teleop_robot_node:main",
+            "distance_sensor = gridsim_ros.distance_sensor_node:main",
+            "imu_sim = gridsim_ros.imu_sim_node:main",
+            "wall_estimator = gridsim_ros.wall_estimator_node:main",
         ],
     },
 )
