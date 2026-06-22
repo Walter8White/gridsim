@@ -1,0 +1,19 @@
+{
+  "source_step": "/home/emilien/deploya/gridsim/assets/cad/grid/deployment motor.step",
+  "generated_from": "STEP via CadQuery; mesh centered, materialized, and rotated so long axis is local Y",
+  "asset_units": "millimeters",
+  "scene_unit_scale": 0.001,
+  "long_axis": "Y",
+  "length_asset_units": 243.531,
+  "length_m": 0.243531,
+  "width_m": 0.117247,
+  "depth_m": 0.106,
+  "bbox_asset_units": {
+    "xmin": -58.622,
+    "ymin": -163.531,
+    "zmin": -53.0,
+    "xmax": 58.625,
+    "ymax": 80.0,
+    "zmax": 53.0
+  }
+}

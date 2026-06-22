@@ -10,7 +10,7 @@ from pathlib import Path
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, ExecuteProcess
 from launch.conditions import IfCondition
-from launch.substitutions import LaunchConfiguration, PythonExpression
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 def _find_project_root() -> Path:
@@ -43,23 +43,6 @@ def generate_launch_description() -> LaunchDescription:
         [
             use_isaac_arg,
             isaac_process,
-            # Keyboard teleop — opens in gnome-terminal so stdin is available
-            ExecuteProcess(
-                cmd=[
-                    "gnome-terminal",
-                    "--",
-                    "bash", "-c",
-                    (
-                        "set +u; "
-                        "source /opt/ros/jazzy/setup.bash; "
-                        f"source {_PROJECT_ROOT}/install/setup.bash; "
-                        "echo 'Teleop ready — use W/S/A/D/Q/E keys'; "
-                        "ros2 run gridsim_ros teleop_robot; "
-                        "read -p 'Press Enter to close...'"
-                    ),
-                ],
-                output="screen",
-            ),
             # Simulated TF-Luna sensors (geometric raycasts)
             Node(
                 package="gridsim_ros",
