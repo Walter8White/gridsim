@@ -215,13 +215,13 @@ def _add_xyz_rotation_ops(xform: UsdGeom.Xform, rotation_deg: tuple[float, float
 
 def _add_rail(
     stage, path: str, world_pos: tuple, *,
-    vertical: bool = False, along_y: bool = False, kinematic: bool = True,
+    vertical: bool = False, kinematic: bool = True,
     mass_kg: float = 5.0, enable_collision: bool = True,
     visual_rotate_y_deg: float = -90.0,
 ) -> UsdGeom.Xform:
     """One horizontal_rail.usd segment placed in world space.
 
-    vertical=False: long axis → World X  (Rz −90°), unless along_y=True.
+    vertical=False: long axis → World X  (Rz −90°)
     vertical=True:  long axis → World Z  (Rx +90°)
     Collider box dims are the same (width × length × depth) in the prim's local frame.
     """
@@ -229,8 +229,6 @@ def _add_rail(
     prim.AddTranslateOp().Set(Gf.Vec3d(*world_pos))
     if vertical:
         prim.AddRotateXOp().Set(90.0)   # asset Y → World Z
-    elif along_y:
-        pass                            # asset Y → World Y
     else:
         prim.AddRotateZOp().Set(-90.0)  # asset Y → World X
 
@@ -280,12 +278,14 @@ def _create_h_rows(stage, config: MvpSceneConfig, base_z: float) -> None:
 
 
 def _create_v_columns(stage, config: MvpSceneConfig, base_z: float) -> list:
-    """Create even columns as a fixed deployed grid.
+    """For each even column create lower (kinematic, articulation base) + upper (dynamic).
 
-    Lower halves stay vertical. Upper halves are kinematic and deployed at 90 degrees
-    from the fold pivot, so the scene starts in the deployed geometry without motors
-    or visible debug constraints.
+    ArticulationRootAPI goes on the kinematic LOWER half (fixed base).  The joint is
+    placed outside both body prims to avoid USD hierarchy ambiguity.  A top horizontal
+    rail visual is added as a USD child of each upper half so it follows the fold for free.
+    Returns a list of DriveAPI objects, one per column.
     """
+    drives = []
     half = config.grid_height_m / 2.0
     y = -config.facade_standoff_m
     ox = -0.5 * config.grid_width_m
@@ -298,15 +298,19 @@ def _create_v_columns(stage, config: MvpSceneConfig, base_z: float) -> list:
         lower_path = f"/World/col{c}_lower"
         upper_path = f"/World/col{c}_upper"
 
-        # Lower half: fixed vertical rail.
+        # Lower half: kinematic fixed base of this column's articulation
         _add_rail(stage, lower_path, (x, y, base_z + half / 2.0), vertical=True)
+        UsdPhysics.ArticulationRootAPI.Apply(stage.GetPrimAtPath(lower_path))
 
-        # Upper half: fixed deployed rail, folded out horizontally from the pivot.
-        _add_rail(stage, upper_path, (x, y - half / 2.0, base_z + half), along_y=True)
+        # Upper half: dynamic leaf — NO ArticulationRootAPI here (root is on lower)
+        # Collision disabled so the fold isn't blocked by kinematic horizontal rails
+        _add_rail(stage, upper_path, (x, y, base_z + half + half / 2.0), vertical=True,
+                  kinematic=False, mass_kg=4.0, enable_collision=False)
 
         # Row 3 horizontal rail — visual-only child of upper half.
-        # Placed at upper-local Y=0, i.e. the middle of the deployed upper rail.
+        # Placed at upper-local Y=0, i.e. the middle of the upper vertical rail.
         # Rz(-90°) in upper-local makes asset Y → upper-local X = World X.
+        # As the upper half folds, the rail follows the deployment kinematics.
         if config.grid_rows >= 3 and c < config.grid_columns:
             h = UsdGeom.Xform.Define(stage, f"{upper_path}/hrow3_seg{c // 2}")
             h.AddTranslateOp().Set(Gf.Vec3f(1.0, 0.0, 0.0))
@@ -317,6 +321,32 @@ def _create_v_columns(stage, config: MvpSceneConfig, base_z: float) -> list:
                 vis.AddRotateYOp().Set(-90.0)
                 aref = UsdGeom.Xform.Define(stage, f"{upper_path}/hrow3_seg{c // 2}/visual/asset")
                 aref.GetPrim().GetReferences().AddReference(str(RAIL_ASSET_PATH))
+
+        lower_prim = stage.GetPrimAtPath(lower_path)
+        upper_prim = stage.GetPrimAtPath(upper_path)
+
+        # Joint is a sibling of both bodies at /World level — avoids USD hierarchy issues
+        joint = UsdPhysics.RevoluteJoint.Define(stage, f"/World/col{c}_fold_joint")
+        joint.CreateBody0Rel().SetTargets([lower_prim.GetPath()])
+        joint.CreateBody1Rel().SetTargets([upper_prim.GetPath()])
+        joint.CreateAxisAttr().Set("X")
+        # local Y = World Z for both bodies (Rx 90° applied), so half/2 in local Y = top/bottom
+        joint.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, half / 2.0, 0.0))
+        joint.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, -half / 2.0, 0.0))
+        joint.CreateLocalRot0Attr().Set(Gf.Quatf(1.0))
+        joint.CreateLocalRot1Attr().Set(Gf.Quatf(1.0))
+        joint.CreateLowerLimitAttr().Set(0.0)
+        joint.CreateUpperLimitAttr().Set(0.0)
+        joint.CreateCollisionEnabledAttr().Set(False)
+
+        drive = UsdPhysics.DriveAPI.Apply(joint.GetPrim(), "angular")
+        drive.CreateTypeAttr().Set("force")
+        drive.CreateTargetVelocityAttr().Set(0.0)
+        drive.CreateStiffnessAttr().Set(0.0)
+        drive.CreateDampingAttr().Set(50.0)
+        drive.CreateMaxForceAttr().Set(300.0)
+
+        drives.append(drive)
 
         # Deployment motor visual — CAD asset at the fold junction.
         # It is offset toward the viewer so it does not hide inside the rail mesh.
@@ -343,8 +373,8 @@ def _create_v_columns(stage, config: MvpSceneConfig, base_z: float) -> list:
                 (0.95, 0.48, 0.02),
             )
 
-    print("[deploy] fixed deployed grid created", flush=True)
-    return []
+    print(f"[deploy] {len(drives)} column fold joints created", flush=True)
+    return drives
 
 
 def _grid_local_to_world(config: MvpSceneConfig, grid_center_z: float, local):
@@ -546,29 +576,12 @@ def main() -> int:
 
     frame_count = 0
     frame_period_s = 1.0 / config.simulation_frequency_hz
-    hz = config.simulation_frequency_hz
 
     while simulation_app.is_running():
         simulation_app.update()
         frame_count += 1
 
-        # Fold/unfold cycle (repeating every 10 s):
-        #   3 s → fold out at 45 deg/s  |  5 s → hold at 90°
-        #   7 s → fold back at 45 deg/s |  9 s → hold at 0°
-        if _deploy_drives and not ARGS.test:
-            cycle = frame_count % int(10 * hz)
-            if cycle == int(3 * hz):
-                set_deploy_velocity(45.0)
-                print("[deploy] folding out...", flush=True)
-            elif cycle == int(5 * hz):
-                set_deploy_velocity(0.0)
-                print("[deploy] holding deployed", flush=True)
-            elif cycle == int(7 * hz):
-                set_deploy_velocity(-45.0)
-                print("[deploy] folding back...", flush=True)
-            elif cycle == int(9 * hz):
-                set_deploy_velocity(0.0)
-                print("[deploy] holding retracted", flush=True)
+        set_deploy_velocity(0.0)
 
         if ARGS.realtime:
             time.sleep(frame_period_s)
