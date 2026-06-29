@@ -126,6 +126,7 @@ _DEPLOY_MOTOR_ROTATION_DEG = (
     ARGS.motor_rotate_z,
 )
 _DEPLOY_MOTOR_Y_OFFSET_M = 0.01
+_GRID_BASE_Z_M = 0.025
 
 # Populated by build_scene(), consumed in the main loop
 _robot_translate_op = None
@@ -214,12 +215,13 @@ def _add_xyz_rotation_ops(xform: UsdGeom.Xform, rotation_deg: tuple[float, float
 
 def _add_rail(
     stage, path: str, world_pos: tuple, *,
-    vertical: bool = False, kinematic: bool = True,
+    vertical: bool = False, along_y: bool = False, kinematic: bool = True,
     mass_kg: float = 5.0, enable_collision: bool = True,
+    visual_rotate_y_deg: float = -90.0,
 ) -> UsdGeom.Xform:
     """One horizontal_rail.usd segment placed in world space.
 
-    vertical=False: long axis → World X  (Rz −90°)
+    vertical=False: long axis → World X  (Rz −90°), unless along_y=True.
     vertical=True:  long axis → World Z  (Rx +90°)
     Collider box dims are the same (width × length × depth) in the prim's local frame.
     """
@@ -227,6 +229,8 @@ def _add_rail(
     prim.AddTranslateOp().Set(Gf.Vec3d(*world_pos))
     if vertical:
         prim.AddRotateXOp().Set(90.0)   # asset Y → World Z
+    elif along_y:
+        pass                            # asset Y → World Y
     else:
         prim.AddRotateZOp().Set(-90.0)  # asset Y → World X
 
@@ -238,7 +242,7 @@ def _add_rail(
     if RAIL_ASSET_PATH.exists():
         vis = UsdGeom.Xform.Define(stage, f"{path}/visual")
         vis.AddScaleOp().Set(Gf.Vec3f(_RAIL_UNIT_SCALE, _RAIL_UNIT_SCALE, _RAIL_UNIT_SCALE))
-        vis.AddRotateYOp().Set(-90.0)  # rotate cross-section around the rail's own Y axis
+        vis.AddRotateYOp().Set(visual_rotate_y_deg)
         asset_ref = UsdGeom.Xform.Define(stage, f"{path}/visual/asset")
         asset_ref.GetPrim().GetReferences().AddReference(str(RAIL_ASSET_PATH))
 
@@ -253,7 +257,7 @@ def _add_rail(
     return prim
 
 
-def _create_h_rows(stage, config: MvpSceneConfig) -> None:
+def _create_h_rows(stage, config: MvpSceneConfig, base_z: float) -> None:
     """Kinematic horizontal rail rows.
 
     Row 3 is created as USD children of the upper column halves so it follows the
@@ -265,20 +269,23 @@ def _create_h_rows(stage, config: MvpSceneConfig) -> None:
     for r in (0, 1):
         if r > config.grid_rows:
             continue
-        z = r * config.module_height_m
+        z = base_z + r * config.module_height_m
         for s in range(segs_per_row):
-            _add_rail(stage, f"/World/hrow{r}_seg{s}", (ox + s * _RAIL_LENGTH_M, y, z))
+            _add_rail(
+                stage,
+                f"/World/hrow{r}_seg{s}",
+                (ox + s * _RAIL_LENGTH_M, y, z),
+                visual_rotate_y_deg=0.0,
+            )
 
 
-def _create_v_columns(stage, config: MvpSceneConfig) -> list:
-    """For each even column create lower (kinematic, articulation base) + upper (dynamic).
+def _create_v_columns(stage, config: MvpSceneConfig, base_z: float) -> list:
+    """Create even columns as a fixed deployed grid.
 
-    ArticulationRootAPI goes on the kinematic LOWER half (fixed base).  The joint is
-    placed outside both body prims to avoid USD hierarchy ambiguity.  A top horizontal
-    rail visual is added as a USD child of each upper half so it follows the fold for free.
-    Returns a list of DriveAPI objects, one per column.
+    Lower halves stay vertical. Upper halves are kinematic and deployed at 90 degrees
+    from the fold pivot, so the scene starts in the deployed geometry without motors
+    or visible debug constraints.
     """
-    drives = []
     half = config.grid_height_m / 2.0
     y = -config.facade_standoff_m
     ox = -0.5 * config.grid_width_m
@@ -291,19 +298,15 @@ def _create_v_columns(stage, config: MvpSceneConfig) -> list:
         lower_path = f"/World/col{c}_lower"
         upper_path = f"/World/col{c}_upper"
 
-        # Lower half: kinematic fixed base of this column's articulation
-        _add_rail(stage, lower_path, (x, y, half / 2.0), vertical=True)
-        UsdPhysics.ArticulationRootAPI.Apply(stage.GetPrimAtPath(lower_path))
+        # Lower half: fixed vertical rail.
+        _add_rail(stage, lower_path, (x, y, base_z + half / 2.0), vertical=True)
 
-        # Upper half: dynamic leaf — NO ArticulationRootAPI here (root is on lower)
-        # Collision disabled so the fold isn't blocked by kinematic horizontal rails
-        _add_rail(stage, upper_path, (x, y, half + half / 2.0), vertical=True,
-                  kinematic=False, mass_kg=4.0, enable_collision=False)
+        # Upper half: fixed deployed rail, folded out horizontally from the pivot.
+        _add_rail(stage, upper_path, (x, y - half / 2.0, base_z + half), along_y=True)
 
         # Row 3 horizontal rail — visual-only child of upper half.
-        # Placed at upper-local Y=0, i.e. the middle of the upper vertical rail.
+        # Placed at upper-local Y=0, i.e. the middle of the deployed upper rail.
         # Rz(-90°) in upper-local makes asset Y → upper-local X = World X.
-        # As the upper half folds, the rail follows the deployment kinematics.
         if config.grid_rows >= 3 and c < config.grid_columns:
             h = UsdGeom.Xform.Define(stage, f"{upper_path}/hrow3_seg{c // 2}")
             h.AddTranslateOp().Set(Gf.Vec3f(1.0, 0.0, 0.0))
@@ -315,38 +318,12 @@ def _create_v_columns(stage, config: MvpSceneConfig) -> list:
                 aref = UsdGeom.Xform.Define(stage, f"{upper_path}/hrow3_seg{c // 2}/visual/asset")
                 aref.GetPrim().GetReferences().AddReference(str(RAIL_ASSET_PATH))
 
-        lower_prim = stage.GetPrimAtPath(lower_path)
-        upper_prim = stage.GetPrimAtPath(upper_path)
-
-        # Joint is a sibling of both bodies at /World level — avoids USD hierarchy issues
-        joint = UsdPhysics.RevoluteJoint.Define(stage, f"/World/col{c}_fold_joint")
-        joint.CreateBody0Rel().SetTargets([lower_prim.GetPath()])
-        joint.CreateBody1Rel().SetTargets([upper_prim.GetPath()])
-        joint.CreateAxisAttr().Set("X")
-        # local Y = World Z for both bodies (Rx 90° applied), so half/2 in local Y = top/bottom
-        joint.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, half / 2.0, 0.0))
-        joint.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, -half / 2.0, 0.0))
-        joint.CreateLocalRot0Attr().Set(Gf.Quatf(1.0))
-        joint.CreateLocalRot1Attr().Set(Gf.Quatf(1.0))
-        joint.CreateLowerLimitAttr().Set(0.0)
-        joint.CreateUpperLimitAttr().Set(_DEPLOY_ANGLE_DEG)
-        joint.CreateCollisionEnabledAttr().Set(False)
-
-        drive = UsdPhysics.DriveAPI.Apply(joint.GetPrim(), "angular")
-        drive.CreateTypeAttr().Set("force")
-        drive.CreateTargetVelocityAttr().Set(0.0)
-        drive.CreateStiffnessAttr().Set(0.0)
-        drive.CreateDampingAttr().Set(50.0)
-        drive.CreateMaxForceAttr().Set(300.0)
-
-        drives.append(drive)
-
         # Deployment motor visual — CAD asset at the fold junction.
         # It is offset toward the viewer so it does not hide inside the rail mesh.
         motor_path = f"/World/col{c}_motor_vis"
         motor_xf = UsdGeom.Xform.Define(stage, motor_path)
         motor_y = y + _DEPLOY_MOTOR_Y_OFFSET_M
-        motor_xf.AddTranslateOp().Set(Gf.Vec3d(x, motor_y, half))
+        motor_xf.AddTranslateOp().Set(Gf.Vec3d(x, motor_y, base_z + half))
         _add_xyz_rotation_ops(motor_xf, _DEPLOY_MOTOR_ROTATION_DEG)
         if DEPLOY_MOTOR_ASSET_PATH.exists():
             vis = UsdGeom.Xform.Define(stage, f"{motor_path}/visual")
@@ -366,8 +343,8 @@ def _create_v_columns(stage, config: MvpSceneConfig) -> list:
                 (0.95, 0.48, 0.02),
             )
 
-    print(f"[deploy] {len(drives)} column fold joints created", flush=True)
-    return drives
+    print("[deploy] fixed deployed grid created", flush=True)
+    return []
 
 
 def _grid_local_to_world(config: MvpSceneConfig, grid_center_z: float, local):
@@ -478,17 +455,17 @@ def build_scene(config: MvpSceneConfig):
     _add_collision(surf.GetPrim())
 
     # ── Grid anchor (kinematic, no visual — used by carriage joint) ──────────
-    grid_center_z = config.grid_height_m / 2.0
+    grid_center_z = _GRID_BASE_Z_M + config.grid_height_m / 2.0
     grid = _create_xform(stage, GRID_PATH,
                          (0.0, -config.facade_standoff_m, grid_center_z))
     grid.AddRotateXOp().Set(90.0)
     _make_rigid(grid.GetPrim(), config.grid_mass_kg, kinematic=True)
 
     # ── Horizontal rail rows (kinematic surface rails) ────────────────────────
-    _create_h_rows(stage, config)
+    _create_h_rows(stage, config, _GRID_BASE_Z_M)
 
     # ── Vertical columns (lower kinematic + upper dynamic with fold motor) ────
-    _deploy_drives = _create_v_columns(stage, config)
+    _deploy_drives = _create_v_columns(stage, config, _GRID_BASE_Z_M)
 
     _create_physical_carriage(stage, config, grid_center_z)
 
@@ -578,7 +555,7 @@ def main() -> int:
         # Fold/unfold cycle (repeating every 10 s):
         #   3 s → fold out at 45 deg/s  |  5 s → hold at 90°
         #   7 s → fold back at 45 deg/s |  9 s → hold at 0°
-        if not ARGS.test:
+        if _deploy_drives and not ARGS.test:
             cycle = frame_count % int(10 * hz)
             if cycle == int(3 * hz):
                 set_deploy_velocity(45.0)
