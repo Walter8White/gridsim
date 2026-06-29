@@ -8,6 +8,7 @@ Robot at /World/robot follows /robot/pose via a background rclpy thread.
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import math
 import queue
@@ -29,6 +30,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--motor-rotate-x", type=float, default=90.0)
     parser.add_argument("--motor-rotate-y", type=float, default=90.0)
     parser.add_argument("--motor-rotate-z", type=float, default=180.0)
+    parser.add_argument("--carriage-log", type=Path)
+    parser.add_argument("--no-carriage-control", action="store_true")
     args, kit_args = parser.parse_known_args()
     sys.argv = [sys.argv[0], *kit_args]
     return args
@@ -60,6 +63,7 @@ GROUND_PATH = "/World/ground"
 GRID_PATH = "/World/grid"
 ROBOT_PATH = "/World/robot"
 CARRIAGE_PATH = "/World/carriage"
+CARRIAGE_X_AXIS_PATH = "/World/carriage_x_axis"
 
 RAIL_ASSET_PATH = PROJECT_ROOT / "assets/cad/grid/horizontal_rail.usd"
 RAIL_METADATA_PATH = PROJECT_ROOT / "assets/cad/grid/horizontal_rail.json"
@@ -70,6 +74,12 @@ DEPLOY_MOTOR_METADATA_PATH = PROJECT_ROOT / "assets/cad/grid/deployment_motor.js
 
 _SENSOR_SPACING_M = 0.15          # left=-0.15, center=0, right=+0.15
 _ROBOT_BODY_W, _ROBOT_BODY_D, _ROBOT_BODY_H = 0.55, 0.42, 0.30
+_CARRIAGE_MOTOR_PULLY_RADIUS_M = 0.02
+_CARRIAGE_MOTOR_GEAR_RATIO = 10.0
+_CARRIAGE_MAX_FORCE_N = 250.0
+_CARRIAGE_KP = 4.0
+_CARRIAGE_MAX_SPEED_MPS = 0.35
+_CARRIAGE_ENCODER_NOISE_M = 0.0005
 
 _DEFAULT_RAIL_METADATA = {
     "scene_unit_scale": 0.001,
@@ -136,9 +146,108 @@ _robot_z = None
 # Deployment drives — populated by build_scene()
 _deploy_drives: list = []
 _DEPLOY_ANGLE_DEG: float = 90.0  # max fold angle for column deployment
+_carriage_controller = None
 
 # Latest pose from ROS2 teleop
 _pose_q: queue.Queue[tuple[float, float, float]] = queue.Queue(maxsize=1)
+
+
+class CarriageController:
+    """Simple 2-axis carriage controller with encoder and motor telemetry.
+
+    This is the first control MVP: the carriage is commanded through PhysX joint
+    drives, while the encoder state is simulated from the commanded motion. The
+    motor torque is the equivalent rotary torque needed to generate the commanded
+    linear force through a pulley/gearbox.
+    """
+
+    def __init__(
+        self,
+        *,
+        x_drive,
+        z_drive,
+        waypoints: list[tuple[float, float]],
+        log_path: Path,
+        dt: float,
+    ) -> None:
+        self.x_drive = x_drive
+        self.z_drive = z_drive
+        self.waypoints = waypoints
+        self.log_path = log_path
+        self.dt = dt
+        self.index = 0
+        self.x = waypoints[0][0]
+        self.z = waypoints[0][1]
+        self.vx = 0.0
+        self.vz = 0.0
+        self.fx = 0.0
+        self.fz = 0.0
+        self.file = None
+        self.writer = None
+
+    def open(self) -> None:
+        self.log_path.parent.mkdir(parents=True, exist_ok=True)
+        self.file = self.log_path.open("w", newline="", encoding="utf-8")
+        self.writer = csv.writer(self.file)
+        self.writer.writerow([
+            "time_s",
+            "waypoint_index",
+            "target_x_m",
+            "target_z_m",
+            "encoder_x_m",
+            "encoder_z_m",
+            "velocity_x_mps",
+            "velocity_z_mps",
+            "force_x_n",
+            "force_z_n",
+            "motor_torque_x_nm",
+            "motor_torque_z_nm",
+        ])
+
+    def close(self) -> None:
+        if self.file is not None:
+            self.file.close()
+            self.file = None
+
+    def _axis_command(self, error: float) -> tuple[float, float, float]:
+        velocity = max(-_CARRIAGE_MAX_SPEED_MPS, min(_CARRIAGE_MAX_SPEED_MPS, _CARRIAGE_KP * error))
+        force = max(-_CARRIAGE_MAX_FORCE_N, min(_CARRIAGE_MAX_FORCE_N, 40.0 * error))
+        torque = force * _CARRIAGE_MOTOR_PULLY_RADIUS_M / _CARRIAGE_MOTOR_GEAR_RATIO
+        return velocity, force, torque
+
+    def step(self, time_s: float) -> None:
+        target_x, target_z = self.waypoints[self.index]
+        ex = target_x - self.x
+        ez = target_z - self.z
+        self.vx, self.fx, tx = self._axis_command(ex)
+        self.vz, self.fz, tz = self._axis_command(ez)
+
+        self.x += self.vx * self.dt
+        self.z += self.vz * self.dt
+        if abs(ex) < 0.015 and abs(ez) < 0.015:
+            self.index = (self.index + 1) % len(self.waypoints)
+
+        self.x_drive.GetTargetVelocityAttr().Set(self.vx)
+        self.z_drive.GetTargetVelocityAttr().Set(self.vz)
+        self.x_drive.GetMaxForceAttr().Set(abs(self.fx))
+        self.z_drive.GetMaxForceAttr().Set(abs(self.fz))
+
+        if self.writer is not None:
+            noise = _CARRIAGE_ENCODER_NOISE_M * math.sin(17.0 * time_s)
+            self.writer.writerow([
+                f"{time_s:.4f}",
+                self.index,
+                f"{target_x:.4f}",
+                f"{target_z:.4f}",
+                f"{self.x + noise:.5f}",
+                f"{self.z - noise:.5f}",
+                f"{self.vx:.5f}",
+                f"{self.vz:.5f}",
+                f"{self.fx:.3f}",
+                f"{self.fz:.3f}",
+                f"{tx:.5f}",
+                f"{tz:.5f}",
+            ])
 
 
 def _start_pose_listener() -> None:
@@ -390,6 +499,23 @@ def _quat_x(degrees: float) -> Gf.Quatf:
     )
 
 
+def _create_carriage_waypoints(config: MvpSceneConfig) -> list[tuple[float, float]]:
+    xs = [
+        -0.5 * config.grid_width_m + c * config.module_width_m
+        for c in range(config.grid_columns + 1)
+        if c % 2 == 0
+    ]
+    z_min = -0.5 * config.grid_height_m + 0.25
+    z_max = 0.5 * config.grid_height_m - 0.25
+    waypoints: list[tuple[float, float]] = []
+    for index, x in enumerate(xs):
+        if index % 2 == 0:
+            waypoints.extend([(x, z_min), (x, z_max)])
+        else:
+            waypoints.extend([(x, z_max), (x, z_min)])
+    return waypoints
+
+
 def _create_physical_carriage(stage, config: MvpSceneConfig, grid_center_z: float):
     if not CARRIAGE_ASSET_PATH.exists():
         return None
@@ -398,6 +524,19 @@ def _create_physical_carriage(stage, config: MvpSceneConfig, grid_center_z: floa
     rail_local_z = 0.5 * (_RAIL_DEPTH_M + _CARRIAGE_DEPTH_M)
     rail_local = (rail_x, 0.0, rail_local_z)
     carriage_world = _grid_local_to_world(config, grid_center_z, rail_local)
+
+    x_axis = UsdGeom.Xform.Define(stage, CARRIAGE_X_AXIS_PATH)
+    x_axis.AddTranslateOp().Set(Gf.Vec3d(*carriage_world))
+    _make_rigid(x_axis.GetPrim(), 0.8)
+    x_axis_collider = _create_box(
+        stage,
+        f"{CARRIAGE_X_AXIS_PATH}/collider",
+        (0.06, 0.06, 0.06),
+        (0.0, 0.0, 0.0),
+        (0.2, 0.2, 0.2),
+    )
+    _add_collision(x_axis_collider.GetPrim())
+    UsdGeom.Imageable(x_axis_collider.GetPrim()).MakeInvisible()
 
     path = CARRIAGE_PATH
     carriage = UsdGeom.Xform.Define(stage, path)
@@ -423,13 +562,32 @@ def _create_physical_carriage(stage, config: MvpSceneConfig, grid_center_z: floa
     _add_collision(collider.GetPrim())
     UsdGeom.Imageable(collider.GetPrim()).MakeInvisible()
 
+    x_joint = UsdPhysics.PrismaticJoint.Define(stage, f"{path}/horizontal_slide_joint")
+    x_joint.CreateBody0Rel().SetTargets([stage.GetPrimAtPath(GRID_PATH).GetPath()])
+    x_joint.CreateBody1Rel().SetTargets([x_axis.GetPrim().GetPath()])
+    x_joint.CreateAxisAttr().Set("X")
+    x_joint.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, rail_local_z))
+    x_joint.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+    x_joint.CreateLocalRot0Attr().Set(_quat_x(-90.0))
+    x_joint.CreateLocalRot1Attr().Set(Gf.Quatf(1.0))
+    x_joint.CreateLowerLimitAttr().Set(-0.5 * config.grid_width_m)
+    x_joint.CreateUpperLimitAttr().Set(0.5 * config.grid_width_m)
+    x_joint.CreateCollisionEnabledAttr().Set(False)
+
+    x_drive = UsdPhysics.DriveAPI.Apply(x_joint.GetPrim(), "linear")
+    x_drive.CreateTypeAttr().Set("force")
+    x_drive.CreateTargetVelocityAttr().Set(0.0)
+    x_drive.CreateDampingAttr().Set(150.0)
+    x_drive.CreateStiffnessAttr().Set(0.0)
+    x_drive.CreateMaxForceAttr().Set(_CARRIAGE_MAX_FORCE_N)
+
     joint = UsdPhysics.PrismaticJoint.Define(stage, f"{path}/vertical_slide_joint")
-    joint.CreateBody0Rel().SetTargets([stage.GetPrimAtPath(GRID_PATH).GetPath()])
+    joint.CreateBody0Rel().SetTargets([x_axis.GetPrim().GetPath()])
     joint.CreateBody1Rel().SetTargets([carriage.GetPrim().GetPath()])
     joint.CreateAxisAttr().Set("Z")
-    joint.CreateLocalPos0Attr().Set(Gf.Vec3f(*rail_local))
+    joint.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
     joint.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
-    joint.CreateLocalRot0Attr().Set(_quat_x(-90.0))
+    joint.CreateLocalRot0Attr().Set(Gf.Quatf(1.0))
     joint.CreateLocalRot1Attr().Set(Gf.Quatf(1.0))
     joint.CreateLowerLimitAttr().Set(-0.5 * config.grid_height_m)
     joint.CreateUpperLimitAttr().Set(0.5 * config.grid_height_m)
@@ -440,8 +598,8 @@ def _create_physical_carriage(stage, config: MvpSceneConfig, grid_center_z: floa
     drive.CreateTargetVelocityAttr().Set(0.0)
     drive.CreateDampingAttr().Set(150.0)
     drive.CreateStiffnessAttr().Set(0.0)
-    drive.CreateMaxForceAttr().Set(250.0)
-    return carriage
+    drive.CreateMaxForceAttr().Set(_CARRIAGE_MAX_FORCE_N)
+    return x_drive, drive, _create_carriage_waypoints(config)
 
 
 def set_deploy_velocity(velocity_degs: float) -> None:
@@ -451,7 +609,7 @@ def set_deploy_velocity(velocity_degs: float) -> None:
 
 
 def build_scene(config: MvpSceneConfig):
-    global _robot_translate_op, _robot_yaw_op, _robot_z, _deploy_drives
+    global _robot_translate_op, _robot_yaw_op, _robot_z, _deploy_drives, _carriage_controller
 
     stage_utils.create_new_stage()
     stage_utils.set_stage_units(meters_per_unit=1.0)
@@ -497,7 +655,18 @@ def build_scene(config: MvpSceneConfig):
     # ── Vertical columns (lower kinematic + upper dynamic with fold motor) ────
     _deploy_drives = _create_v_columns(stage, config, _GRID_BASE_Z_M)
 
-    _create_physical_carriage(stage, config, grid_center_z)
+    carriage_result = _create_physical_carriage(stage, config, grid_center_z)
+    if carriage_result is not None and not ARGS.no_carriage_control:
+        x_drive, z_drive, waypoints = carriage_result
+        log_path = (ARGS.carriage_log or PROJECT_ROOT / "outputs/isaac/carriage_telemetry.csv").resolve()
+        _carriage_controller = CarriageController(
+            x_drive=x_drive,
+            z_drive=z_drive,
+            waypoints=waypoints,
+            log_path=log_path,
+            dt=1.0 / config.simulation_frequency_hz,
+        )
+        print(f"[carriage] control sequence with {len(waypoints)} waypoints", flush=True)
 
     return stage
 
@@ -567,6 +736,9 @@ def main() -> int:
     SimulationManager.setup_simulation(
         dt=1.0 / config.simulation_frequency_hz, device="cpu"
     )
+    if _carriage_controller is not None:
+        _carriage_controller.open()
+        print(f"[carriage] telemetry log: {_carriage_controller.log_path}", flush=True)
     app_utils.play()
     simulation_app.update()
 
@@ -582,6 +754,8 @@ def main() -> int:
         frame_count += 1
 
         set_deploy_velocity(0.0)
+        if _carriage_controller is not None:
+            _carriage_controller.step(frame_count * frame_period_s)
 
         if ARGS.realtime:
             time.sleep(frame_period_s)
@@ -589,6 +763,8 @@ def main() -> int:
             break
 
     app_utils.stop()
+    if _carriage_controller is not None:
+        _carriage_controller.close()
     print(f"Completed {frame_count} simulation frames", flush=True)
     return 0
 
