@@ -12,6 +12,7 @@ setup(
         ("share/ament_index/resource_index/packages", ["resource/" + package_name]),
         ("share/" + package_name, ["package.xml"]),
         ("share/" + package_name + "/launch", glob("launch/*.launch.py")),
+        ("share/" + package_name + "/rviz", glob("rviz/*.rviz")),
     ],
     install_requires=["setuptools"],
     zip_safe=True,
@@ -28,6 +29,7 @@ setup(
             "distance_sensor = gridsim_ros.distance_sensor_node:main",
             "imu_sim = gridsim_ros.imu_sim_node:main",
             "wall_estimator = gridsim_ros.wall_estimator_node:main",
+            "gocator_pointcloud = gridsim_ros.gocator_pointcloud_node:main",
         ],
     },
 )
