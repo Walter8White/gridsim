@@ -21,6 +21,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--test", action="store_true")
     parser.add_argument("--no-lidar", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--no-ros", action="store_true")
+    parser.add_argument("--ros-bridge", action="store_true", help="Publish Isaac Gocator point clouds to ROS 2.")
+    parser.add_argument("--ros-frame-id", default="world")
+    parser.add_argument("--ros-publish-rate", type=float, default=10.0)
+    parser.add_argument("--ros-max-points", type=int, default=500000)
     parser.add_argument("--realtime", action="store_true")
     parser.add_argument("--frames", type=int, default=0)
     parser.add_argument("--output", type=Path)
@@ -47,11 +51,22 @@ simulation_app = SimulationApp(
 import omni.usd
 import isaacsim.core.experimental.utils.app as app_utils
 import isaacsim.core.experimental.utils.stage as stage_utils
+import numpy as np
 import yaml
 from isaacsim.core.simulation_manager import SimulationManager
 from pxr import Gf, Sdf, UsdGeom, UsdLux, UsdPhysics, Vt
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROJECT_ROOT / "src"))
+
+from gridsim_sensors import (  # noqa: E402
+    Gocator2690LineProfiler,
+    Gocator2690Spec,
+    GocatorEncoderTriggeredAcquisition,
+    GocatorPointCloudAccumulator,
+    GocatorProfile,
+    ScannerFramePose,
+)
 
 WORLD_PATH = "/World"
 FACADE_PATH = "/World/facade"
@@ -321,6 +336,20 @@ def _facade_y_offset(x_m, z_m):
     return bow + waves + defects + joints + patches
 
 
+def _facade_y_offset_array(x_m: np.ndarray, z_m: np.ndarray) -> np.ndarray:
+    vectorized = np.vectorize(_facade_y_offset, otypes=[np.float64])
+    return vectorized(x_m, z_m)
+
+
+def _wall_valid_mask(points_world: np.ndarray) -> np.ndarray:
+    return (
+        (points_world[:, 0] >= -FACADE_WIDTH_M / 2.0)
+        & (points_world[:, 0] <= FACADE_WIDTH_M / 2.0)
+        & (points_world[:, 2] >= 0.0)
+        & (points_world[:, 2] <= FACADE_HEIGHT_M)
+    )
+
+
 def _surface_front_y(x_m: float, z_m: float, depth_m: float, clearance_m: float = 0.006) -> float:
     """Place a flat visual marker just in front of the local facade surface."""
     return _facade_y_offset(x_m, z_m) - depth_m / 2.0 - clearance_m
@@ -516,6 +545,126 @@ def _add_scan_path_preview(stage, datasheet: dict) -> None:
     curve.CreateDisplayColorAttr(Vt.Vec3fArray([Gf.Vec3f(1.0, 0.82, 0.05)]))
 
 
+class IsaacGocatorRosBridge:
+    """Publish Gocator data generated from the Isaac scanner state to ROS 2."""
+
+    def __init__(self, datasheet: dict) -> None:
+        import rclpy
+        from sensor_msgs.msg import PointCloud2, PointField
+        from std_msgs.msg import Header
+
+        self.rclpy = rclpy
+        self.PointCloud2 = PointCloud2
+        self.PointField = PointField
+        self.Header = Header
+        if not rclpy.ok():
+            rclpy.init(args=None)
+        self.node = rclpy.create_node("isaac_gocator_bridge")
+        self.profile_pub = self.node.create_publisher(PointCloud2, "gocator/profile_points", 2)
+        self.cloud_pub = self.node.create_publisher(PointCloud2, "gocator/points", 2)
+        self.frame_id = ARGS.ros_frame_id
+        self.publish_period_s = 1.0 / max(ARGS.ros_publish_rate, 1e-6)
+        self.last_publish_s = -1.0
+        self.max_points = ARGS.ros_max_points
+
+        spec = Gocator2690Spec(
+            points_per_profile=int(datasheet.get("points_per_profile", 3700)),
+            profile_spacing_m=float(datasheet.get("profile_spacing_m", 0.0005)),
+            nominal_standoff_m=_gocator_standoff_m(datasheet),
+            nominal_profile_rate_hz=float(datasheet.get("nominal_profile_rate_hz", 40.0)),
+        )
+        self.profiler = Gocator2690LineProfiler(spec)
+        self.acquisition = GocatorEncoderTriggeredAcquisition(self.profiler, self._sample_profile)
+        self.accumulator = GocatorPointCloudAccumulator(spec.profile_spacing_m)
+        self.node.get_logger().info(
+            f"Isaac ROS bridge publishing /gocator/profile_points and /gocator/points "
+            f"({spec.points_per_profile} pts/profile, {spec.nominal_profile_rate_hz:.1f} Hz, "
+            f"spacing={spec.profile_spacing_m:.6f} m)"
+        )
+
+    def update(self, scanner_pose: Gf.Vec3d, timestamp_s: float) -> None:
+        pose = ScannerFramePose.from_arrays(
+            [scanner_pose[0], scanner_pose[1], scanner_pose[2]],
+            [1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.0, 1.0, 0.0],
+        )
+        stamp = self.node.get_clock().now().to_msg()
+        for profile in self.acquisition.update(pose, timestamp_s):
+            self.accumulator.add_profile(profile)
+            self.profile_pub.publish(self._pointcloud2(profile.valid_points_m, stamp))
+
+        if self.last_publish_s < 0.0 or timestamp_s - self.last_publish_s >= self.publish_period_s:
+            self.last_publish_s = timestamp_s
+            self.cloud_pub.publish(self._pointcloud2(self._preview_cloud(), stamp))
+        self.rclpy.spin_once(self.node, timeout_sec=0.0)
+
+    def shutdown(self) -> None:
+        self.node.destroy_node()
+        if self.rclpy.ok():
+            self.rclpy.shutdown()
+
+    def _sample_profile(
+        self,
+        pose: ScannerFramePose,
+        timestamp_s: float,
+        profile_index: int,
+        encoder_position_m: float,
+    ):
+        profile = self.profiler.sample_surface(
+            pose,
+            _facade_y_offset_array,
+            timestamp_s=timestamp_s,
+            profile_index=profile_index,
+            encoder_position_m=encoder_position_m,
+        )
+        profile.valid_mask &= _wall_valid_mask(profile.points_world)
+        return profile
+
+    def _preview_cloud(self) -> np.ndarray:
+        profiles = self.accumulator.profiles
+        if not profiles:
+            return np.empty((0, 3), dtype=np.float64)
+        total_valid = sum(int(profile.valid_mask.sum()) for profile in profiles)
+        if self.max_points <= 0 or total_valid <= self.max_points:
+            return self.accumulator.point_cloud()
+        per_profile_budget = max(2, self.max_points // len(profiles))
+        sampled_profiles = [
+            _sample_profile_points(profile, per_profile_budget)
+            for profile in profiles
+        ]
+        sampled_profiles = [points for points in sampled_profiles if len(points)]
+        if not sampled_profiles:
+            return np.empty((0, 3), dtype=np.float64)
+        return np.vstack(sampled_profiles)
+
+    def _pointcloud2(self, points: np.ndarray, stamp) -> object:
+        points32 = np.asarray(points, dtype=np.float32)
+        message = self.PointCloud2()
+        message.header = self.Header(stamp=stamp, frame_id=self.frame_id)
+        message.height = 1
+        message.width = int(len(points32))
+        message.fields = [
+            self.PointField(name="x", offset=0, datatype=self.PointField.FLOAT32, count=1),
+            self.PointField(name="y", offset=4, datatype=self.PointField.FLOAT32, count=1),
+            self.PointField(name="z", offset=8, datatype=self.PointField.FLOAT32, count=1),
+        ]
+        message.is_bigendian = False
+        message.point_step = 12
+        message.row_step = message.point_step * message.width
+        message.is_dense = True
+        message.data = points32.tobytes()
+        return message
+
+
+def _sample_profile_points(profile: GocatorProfile, max_points: int) -> np.ndarray:
+    points = profile.valid_points_m
+    if len(points) <= max_points:
+        return points
+    indices = np.linspace(0, len(points) - 1, max_points, dtype=np.int64)
+    return points[indices]
+
+
 def _create_gocator_sensor(stage) -> str | None:
     config = _SENSOR_CONFIG.get("gocator2690", {})
     metadata = _gocator2690_metadata_defaults()
@@ -629,20 +778,32 @@ def main() -> int:
 
     robot_translate_attr = stage.GetPrimAtPath(ROBOT_ROOT_PATH).GetAttribute("xformOp:translate")
     laser_points_attr = stage.GetPrimAtPath(f"{FACADE_PATH}/laser_contact_line").GetAttribute("points")
+    ros_bridge = None
+    if ARGS.ros_bridge and not ARGS.no_ros:
+        try:
+            ros_bridge = IsaacGocatorRosBridge(datasheet)
+        except Exception as exc:
+            print(f"[ros_bridge] disabled: {exc}", flush=True)
+
     sim_dt = 1.0 / 60.0
     frame_count = 0
-    while simulation_app.is_running():
-        elapsed_s = frame_count * sim_dt
-        scanner_pose = _scan_pose_at_time(datasheet, elapsed_s, ARGS.scan_speed)
-        robot_translate_attr.Set(scanner_pose)
-        laser_points_attr.Set(_laser_contact_points(datasheet, scanner_pose[0], scanner_pose[2]))
-        simulation_app.update()
-        frame_count += 1
-        if frame_limit > 0 and frame_count >= frame_limit:
-            print(f"Completed {frame_count} simulation frames", flush=True)
-            break
-
-    simulation_app.close()
+    try:
+        while simulation_app.is_running():
+            elapsed_s = frame_count * sim_dt
+            scanner_pose = _scan_pose_at_time(datasheet, elapsed_s, ARGS.scan_speed)
+            robot_translate_attr.Set(scanner_pose)
+            laser_points_attr.Set(_laser_contact_points(datasheet, scanner_pose[0], scanner_pose[2]))
+            if ros_bridge is not None:
+                ros_bridge.update(scanner_pose, elapsed_s)
+            simulation_app.update()
+            frame_count += 1
+            if frame_limit > 0 and frame_count >= frame_limit:
+                print(f"Completed {frame_count} simulation frames", flush=True)
+                break
+    finally:
+        if ros_bridge is not None:
+            ros_bridge.shutdown()
+        simulation_app.close()
     return 0
 
 

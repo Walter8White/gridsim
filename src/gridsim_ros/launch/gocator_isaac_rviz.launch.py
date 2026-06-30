@@ -5,7 +5,7 @@ from pathlib import Path
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, ExecuteProcess
 from launch.conditions import IfCondition
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, PythonExpression
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
@@ -22,6 +22,8 @@ def generate_launch_description() -> LaunchDescription:
         [
             DeclareLaunchArgument("workspace", default_value=str(Path.cwd())),
             DeclareLaunchArgument("isaac", default_value="true"),
+            DeclareLaunchArgument("isaac_ros_bridge", default_value="true"),
+            DeclareLaunchArgument("standalone_publisher", default_value="false"),
             DeclareLaunchArgument("rviz", default_value="true"),
             DeclareLaunchArgument("points_per_profile", default_value="3700"),
             DeclareLaunchArgument("profile_spacing_m", default_value="0.0005"),
@@ -35,10 +37,35 @@ def generate_launch_description() -> LaunchDescription:
                     PathJoinSubstitution([workspace, "isaac", "run_mvp.sh"]),
                     "--scan-speed",
                     scan_speed,
+                    "--ros-bridge",
+                    "--ros-publish-rate",
+                    LaunchConfiguration("publish_rate_hz"),
+                    "--ros-max-points",
+                    LaunchConfiguration("max_points"),
                 ],
                 cwd=workspace,
                 output="screen",
-                condition=IfCondition(LaunchConfiguration("isaac")),
+                condition=IfCondition(
+                    PythonExpression([
+                        "'", LaunchConfiguration("isaac"), "' == 'true' and '",
+                        LaunchConfiguration("isaac_ros_bridge"), "' == 'true'",
+                    ])
+                ),
+            ),
+            ExecuteProcess(
+                cmd=[
+                    PathJoinSubstitution([workspace, "isaac", "run_mvp.sh"]),
+                    "--scan-speed",
+                    scan_speed,
+                ],
+                cwd=workspace,
+                output="screen",
+                condition=IfCondition(
+                    PythonExpression([
+                        "'", LaunchConfiguration("isaac"), "' == 'true' and '",
+                        LaunchConfiguration("isaac_ros_bridge"), "' != 'true'",
+                    ])
+                ),
             ),
             Node(
                 package="gridsim_ros",
@@ -66,6 +93,7 @@ def generate_launch_description() -> LaunchDescription:
                         ),
                     }
                 ],
+                condition=IfCondition(LaunchConfiguration("standalone_publisher")),
             ),
             Node(
                 package="rviz2",
