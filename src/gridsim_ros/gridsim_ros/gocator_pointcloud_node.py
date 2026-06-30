@@ -26,6 +26,7 @@ def _add_project_src_to_path() -> None:
 _add_project_src_to_path()
 
 from gridsim_sensors import (  # noqa: E402
+    GocatorProfile,
     Gocator2690LineProfiler,
     Gocator2690Spec,
     GocatorEncoderTriggeredAcquisition,
@@ -164,10 +165,12 @@ class GocatorPointCloudNode(Node):
         self.declare_parameter("scan_speed_m_s", 0.0)
         self.declare_parameter("publish_rate_hz", 10.0)
         self.declare_parameter("max_points", 500000)
+        self.declare_parameter("publish_current_profile", True)
         self.declare_parameter("loop_scan", True)
 
         self.frame_id = str(self.get_parameter("frame_id").value)
         self.max_points = int(self.get_parameter("max_points").value)
+        self.publish_current_profile = bool(self.get_parameter("publish_current_profile").value)
         self.loop_scan = bool(self.get_parameter("loop_scan").value)
         publish_rate_hz = float(self.get_parameter("publish_rate_hz").value)
         nominal_profile_rate_hz = float(self.get_parameter("nominal_profile_rate_hz").value)
@@ -196,6 +199,7 @@ class GocatorPointCloudNode(Node):
         self.z_m = 0.0
         self.direction = 1.0
         self.last_time_s = None
+        self.profile_publisher = self.create_publisher(PointCloud2, "gocator/profile_points", 2)
         self.publisher = self.create_publisher(PointCloud2, "gocator/points", 2)
         self.acquisition_timer = self.create_timer(1.0 / nominal_profile_rate_hz, self._acquire_tick)
         self.publish_timer = self.create_timer(1.0 / publish_rate_hz, self._publish_tick)
@@ -253,14 +257,44 @@ class GocatorPointCloudNode(Node):
 
         for profile in self.acquisition.update(pose, now_s):
             self.accumulator.add_profile(profile)
+            if self.publish_current_profile:
+                self.profile_publisher.publish(
+                    _pointcloud2(profile.valid_points_m, self.frame_id, now.to_msg())
+                )
 
     def _publish_tick(self) -> None:
         now = self.get_clock().now()
-        cloud = self.accumulator.point_cloud()
-        if self.max_points > 0 and len(cloud) > self.max_points:
-            stride = int(np.ceil(len(cloud) / self.max_points))
-            cloud = cloud[::stride]
+        cloud = self._preview_cloud()
         self.publisher.publish(_pointcloud2(cloud, self.frame_id, now.to_msg()))
+
+    def _preview_cloud(self) -> np.ndarray:
+        profiles = self.accumulator.profiles
+        if not profiles:
+            return np.empty((0, 3), dtype=np.float64)
+        total_valid = sum(int(profile.valid_mask.sum()) for profile in profiles)
+        if self.max_points <= 0 or total_valid <= self.max_points:
+            return self.accumulator.point_cloud()
+
+        # Preserve every vertical profile to avoid fake horizontal gaps in RViz.
+        # Downsample within each profile instead; the full-resolution profile is
+        # still published separately on /gocator/profile_points.
+        per_profile_budget = max(2, self.max_points // len(profiles))
+        sampled_profiles = [
+            _sample_profile_points(profile, per_profile_budget)
+            for profile in profiles
+        ]
+        sampled_profiles = [points for points in sampled_profiles if len(points)]
+        if not sampled_profiles:
+            return np.empty((0, 3), dtype=np.float64)
+        return np.vstack(sampled_profiles)
+
+
+def _sample_profile_points(profile: GocatorProfile, max_points: int) -> np.ndarray:
+    points = profile.valid_points_m
+    if len(points) <= max_points:
+        return points
+    indices = np.linspace(0, len(points) - 1, max_points, dtype=np.int64)
+    return points[indices]
 
 
 def main(args: list[str] | None = None) -> None:

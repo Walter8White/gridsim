@@ -23,6 +23,7 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument("scan_speed_m_s", default_value="0.0"),
             DeclareLaunchArgument("publish_rate_hz", default_value="10.0"),
             DeclareLaunchArgument("max_points", default_value="500000"),
+            DeclareLaunchArgument("publish_current_profile", default_value="true"),
             Node(
                 package="gridsim_ros",
                 executable="gocator_pointcloud",
@@ -46,6 +47,9 @@ def generate_launch_description() -> LaunchDescription:
                             LaunchConfiguration("publish_rate_hz"), value_type=float
                         ),
                         "max_points": ParameterValue(LaunchConfiguration("max_points"), value_type=int),
+                        "publish_current_profile": ParameterValue(
+                            LaunchConfiguration("publish_current_profile"), value_type=bool
+                        ),
                     }
                 ],
             ),
