@@ -27,6 +27,43 @@ depth_camera:
     translation_m: [0.0, 0.0, -0.38]
     rpy_deg: [0.0, 0.0, 0.0]
 
+llt3000_600:
+  enable_ll3000_visual: false
+  frame_id: llt3000_600_scanner_frame
+  parent_frame: scanner_mount_link
+  model: scanCONTROL_LLT3000_600
+  scanner_mount_link: scanner_mount_link
+  usd_asset_path: assets/cad/sensors/llt3000_600/llt3000_600_visual.usd
+  scanner_mount_offset_from_carriage_m: [0.0, 0.15, 0.25]
+  sensor_pose_on_mount:
+    translation_m: [0.0, 0.0, 0.0]
+    rpy_deg: [0.0, 0.0, 0.0]
+  scanner_frame_translation_m: [0.0, 0.0, 0.77]
+  x_fov_mm: 600
+  z_measurement_range_mm: 480
+  points_per_profile: 2048
+  nominal_profile_rate_hz: 10000
+  wavelength_nm: 658
+  ip_rating: IP67
+
+gocator2690:
+  enable_gocator_visual: true
+  frame_id: gocator2690_scanner_frame
+  parent_frame: scanner_mount_link
+  model: Gocator_2690
+  scanner_mount_link: scanner_mount_link
+  usd_asset_path: assets/cad/sensors/gocator2690/gocator2690_visual.usd
+  scanner_mount_offset_from_carriage_m: [0.0, 0.15, 0.25]
+  sensor_pose_on_mount:
+    translation_m: [0.0, 0.0, 0.0]
+    rpy_deg: [-90.0, 0.0, 180.0]
+  scanner_frame_translation_m: [0.0, 0.0, 0.0]
+  x_fov_near_mm: 385
+  x_fov_far_mm: 2000
+  z_measurement_range_mm: 1550
+  clearance_distance_mm: 325
+  nominal_standoff_mm: 1100
+
 grid_imu:
   frame_id: grid_imu
   parent_frame: grid

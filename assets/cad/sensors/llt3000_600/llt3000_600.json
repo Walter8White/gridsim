@@ -1,0 +1,54 @@
+{
+  "model": "scanCONTROL LLT3000-600",
+  "source_step": "assets/cad/sensors/llt3000_600/LLT30xx-600.STEP",
+  "source_download": "https://www.micro-epsilon.com/fileadmin/download/cad/scanCONTROL-LLT-30xx-430-600--STEP.zip",
+  "generated_usd": "assets/cad/sensors/llt3000_600/llt3000_600_visual.usd",
+  "units": "meters",
+  "axis_convention": {
+    "x": "horizontal profile direction across the facade",
+    "y": "robot travel / profile stacking direction",
+    "z": "nominal measurement direction from sensor toward the facade"
+  },
+  "cad_axis_mapping": {
+    "asset_x": "STEP +X",
+    "asset_y": "STEP +Z",
+    "asset_z": "STEP -Y"
+  },
+  "bbox_m": {
+    "xmin": -0.394,
+    "ymin": -0.249902,
+    "zmin": -0.05,
+    "xmax": 0.394,
+    "ymax": 0.249902,
+    "zmax": 1.1
+  },
+  "housing_collision_envelope_m": {
+    "x": 0.4799,
+    "y": 0.23,
+    "z": 0.1
+  },
+  "scanner_frame_from_housing": {
+    "translation_m": [
+      0.0,
+      0.0,
+      0.77
+    ],
+    "rpy_deg": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "basis": "X profile, Y stacking, Z measurement; origin at nominal mid measuring range (MMR)"
+  },
+  "datasheet_values": {
+    "x_fov_mm": 600,
+    "z_measurement_range_mm": 480,
+    "smr_mm": 530,
+    "mmr_mm": 770,
+    "emr_mm": 1010,
+    "points_per_profile": 2048,
+    "nominal_profile_rate_hz": 10000,
+    "wavelength_nm": 658,
+    "ip_rating": "IP67"
+  }
+}

@@ -1,20 +1,17 @@
 #!/usr/bin/env python3
-"""Sensing/teleop gridsim scene in Isaac Sim 6.
+"""Sensor-integration Isaac Sim scene.
 
-Robot at /World/robot follows /robot/pose via a background rclpy thread.
-3× TF-Luna sensor boxes are mounted on the robot front face.
+This MVP intentionally removes the grid, rails, carriage, and deployment
+mechanisms. The scene focuses on a Gocator-like scanner facing a facade with
+visible defects so we can inspect scan data and point clouds next.
 """
 
 from __future__ import annotations
 
 import argparse
-import csv
 import json
 import math
-import queue
 import sys
-import threading
-import time
 from pathlib import Path
 
 
@@ -27,11 +24,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--realtime", action="store_true")
     parser.add_argument("--frames", type=int, default=0)
     parser.add_argument("--output", type=Path)
-    parser.add_argument("--motor-rotate-x", type=float, default=90.0)
-    parser.add_argument("--motor-rotate-y", type=float, default=90.0)
-    parser.add_argument("--motor-rotate-z", type=float, default=180.0)
-    parser.add_argument("--carriage-log", type=Path)
-    parser.add_argument("--no-carriage-control", action="store_true")
+    # Kept as no-op compatibility flags for older scripts/commands.
+    parser.add_argument("--motor-rotate-x", type=float, default=90.0, help=argparse.SUPPRESS)
+    parser.add_argument("--motor-rotate-y", type=float, default=90.0, help=argparse.SUPPRESS)
+    parser.add_argument("--motor-rotate-z", type=float, default=180.0, help=argparse.SUPPRESS)
+    parser.add_argument("--carriage-log", type=Path, help=argparse.SUPPRESS)
+    parser.add_argument("--carriage-control", action="store_true", help=argparse.SUPPRESS)
     args, kit_args = parser.parse_known_args()
     sys.argv = [sys.argv[0], *kit_args]
     return args
@@ -45,253 +43,49 @@ simulation_app = SimulationApp(
     {"headless": ARGS.headless or ARGS.test, "renderer": "RayTracedLighting"}
 )
 
-import omni.graph.core as og
 import omni.usd
 import isaacsim.core.experimental.utils.app as app_utils
 import isaacsim.core.experimental.utils.stage as stage_utils
-import usdrt
+import yaml
 from isaacsim.core.simulation_manager import SimulationManager
-from pxr import Gf, UsdGeom, UsdLux, UsdPhysics
+from pxr import Gf, Sdf, UsdGeom, UsdLux, UsdPhysics, Vt
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from gridsim_core.scene_config import MvpSceneConfig
-
+WORLD_PATH = "/World"
 FACADE_PATH = "/World/facade"
 GROUND_PATH = "/World/ground"
-GRID_PATH = "/World/grid"
-ROBOT_PATH = "/World/robot"
-CARRIAGE_PATH = "/World/carriage"
-CARRIAGE_X_AXIS_PATH = "/World/carriage_x_axis"
+ROBOT_ROOT_PATH = "/World/Robot"
+SENSOR_NAME = "Gocator2690"
+GOCATOR2690_METADATA_PATH = PROJECT_ROOT / "assets/cad/sensors/gocator2690/gocator2690.json"
 
-RAIL_ASSET_PATH = PROJECT_ROOT / "assets/cad/grid/horizontal_rail.usd"
-RAIL_METADATA_PATH = PROJECT_ROOT / "assets/cad/grid/horizontal_rail.json"
-CARRIAGE_ASSET_PATH = PROJECT_ROOT / "assets/cad/grid/carriage.usd"
-CARRIAGE_METADATA_PATH = PROJECT_ROOT / "assets/cad/grid/carriage.json"
-DEPLOY_MOTOR_ASSET_PATH = PROJECT_ROOT / "assets/cad/grid/deployment_motor.usd"
-DEPLOY_MOTOR_METADATA_PATH = PROJECT_ROOT / "assets/cad/grid/deployment_motor.json"
-
-_SENSOR_SPACING_M = 0.15          # left=-0.15, center=0, right=+0.15
-_ROBOT_BODY_W, _ROBOT_BODY_D, _ROBOT_BODY_H = 0.55, 0.42, 0.30
-_CARRIAGE_MOTOR_PULLY_RADIUS_M = 0.02
-_CARRIAGE_MOTOR_GEAR_RATIO = 10.0
-_CARRIAGE_MAX_FORCE_N = 250.0
-_CARRIAGE_KP = 4.0
-_CARRIAGE_MAX_SPEED_MPS = 0.35
-_CARRIAGE_ENCODER_NOISE_M = 0.0005
-
-_DEFAULT_RAIL_METADATA = {
-    "scene_unit_scale": 0.001,
-    "length_asset_units": 2000.0,
-    "width_m": 0.082,
-    "depth_m": 0.07,
-}
+FACADE_WIDTH_M = 10.0
+FACADE_HEIGHT_M = 10.0
+SENSOR_STANDOFF_M = 1.0
+SENSOR_HEIGHT_M = 1.0
 
 
-def _load_rail_metadata() -> dict[str, float]:
-    if not RAIL_METADATA_PATH.exists():
-        return _DEFAULT_RAIL_METADATA
-    with RAIL_METADATA_PATH.open("r", encoding="utf-8") as fp:
-        metadata = json.load(fp)
-    return {**_DEFAULT_RAIL_METADATA, **metadata}
+def _load_sensor_config() -> dict:
+    path = PROJECT_ROOT / "configs/sensors.yaml"
+    if not path.exists():
+        return {}
+    with path.open("r", encoding="utf-8") as fp:
+        data = yaml.safe_load(fp)
+    return data if isinstance(data, dict) else {}
 
 
-def _load_carriage_metadata() -> dict[str, float]:
-    if not CARRIAGE_METADATA_PATH.exists():
-        return {"scene_unit_scale": 0.001}
-    with CARRIAGE_METADATA_PATH.open("r", encoding="utf-8") as fp:
-        metadata = json.load(fp)
-    return {"scene_unit_scale": 0.001, **metadata}
+def _load_gocator2690_metadata() -> dict:
+    if not GOCATOR2690_METADATA_PATH.exists():
+        return {}
+    with GOCATOR2690_METADATA_PATH.open("r", encoding="utf-8") as fp:
+        return json.load(fp)
 
 
-def _load_deploy_motor_metadata() -> dict:
-    if not DEPLOY_MOTOR_METADATA_PATH.exists():
-        return {"scene_unit_scale": 0.001}
-    with DEPLOY_MOTOR_METADATA_PATH.open("r", encoding="utf-8") as fp:
-        metadata = json.load(fp)
-    return {"scene_unit_scale": 0.001, **metadata}
+_SENSOR_CONFIG = _load_sensor_config()
+_GOCATOR2690_METADATA = _load_gocator2690_metadata()
 
 
-_RAIL_METADATA = _load_rail_metadata()
-_RAIL_UNIT_SCALE = float(_RAIL_METADATA["scene_unit_scale"])
-_RAIL_LENGTH_M = _RAIL_UNIT_SCALE * float(_RAIL_METADATA["length_asset_units"])
-_RAIL_WIDTH_M = float(_RAIL_METADATA["width_m"])
-_RAIL_DEPTH_M = float(_RAIL_METADATA["depth_m"])
-
-_CARRIAGE_METADATA = _load_carriage_metadata()
-_CARRIAGE_UNIT_SCALE = float(_CARRIAGE_METADATA["scene_unit_scale"])
-_CARRIAGE_WIDTH_M = float(_CARRIAGE_METADATA.get("width_m", 0.06))
-_CARRIAGE_HEIGHT_M = float(_CARRIAGE_METADATA.get("height_m", 0.024))
-_CARRIAGE_DEPTH_M = float(_CARRIAGE_METADATA.get("depth_m", 0.08))
-
-_DEPLOY_MOTOR_METADATA = _load_deploy_motor_metadata()
-_DEPLOY_MOTOR_UNIT_SCALE = float(_DEPLOY_MOTOR_METADATA["scene_unit_scale"])
-_DEPLOY_MOTOR_LENGTH_M = float(_DEPLOY_MOTOR_METADATA.get("length_m", 0.2))
-_DEPLOY_MOTOR_WIDTH_M = float(_DEPLOY_MOTOR_METADATA.get("width_m", 0.12))
-_DEPLOY_MOTOR_DEPTH_M = float(_DEPLOY_MOTOR_METADATA.get("depth_m", 0.11))
-_DEPLOY_MOTOR_ROTATION_DEG = (
-    ARGS.motor_rotate_x,
-    ARGS.motor_rotate_y,
-    ARGS.motor_rotate_z,
-)
-_DEPLOY_MOTOR_Y_OFFSET_M = 0.01
-_GRID_BASE_Z_M = 0.025
-
-# Populated by build_scene(), consumed in the main loop
-_robot_translate_op = None
-_robot_yaw_op = None
-_robot_z = None
-
-# Deployment drives — populated by build_scene()
-_deploy_drives: list = []
-_DEPLOY_ANGLE_DEG: float = 90.0  # max fold angle for column deployment
-_carriage_controller = None
-
-# Latest pose from ROS2 teleop
-_pose_q: queue.Queue[tuple[float, float, float]] = queue.Queue(maxsize=1)
-
-
-class CarriageController:
-    """Simple 2-axis carriage controller with encoder and motor telemetry.
-
-    This is the first control MVP: the carriage is commanded through PhysX joint
-    drives, while the encoder state is simulated from the commanded motion. The
-    motor torque is the equivalent rotary torque needed to generate the commanded
-    linear force through a pulley/gearbox.
-    """
-
-    def __init__(
-        self,
-        *,
-        x_drive,
-        z_drive,
-        waypoints: list[tuple[float, float]],
-        log_path: Path,
-        dt: float,
-    ) -> None:
-        self.x_drive = x_drive
-        self.z_drive = z_drive
-        self.waypoints = waypoints
-        self.log_path = log_path
-        self.dt = dt
-        self.index = 0
-        self.x = waypoints[0][0]
-        self.z = waypoints[0][1]
-        self.vx = 0.0
-        self.vz = 0.0
-        self.fx = 0.0
-        self.fz = 0.0
-        self.file = None
-        self.writer = None
-
-    def open(self) -> None:
-        self.log_path.parent.mkdir(parents=True, exist_ok=True)
-        self.file = self.log_path.open("w", newline="", encoding="utf-8")
-        self.writer = csv.writer(self.file)
-        self.writer.writerow([
-            "time_s",
-            "waypoint_index",
-            "target_x_m",
-            "target_z_m",
-            "encoder_x_m",
-            "encoder_z_m",
-            "velocity_x_mps",
-            "velocity_z_mps",
-            "force_x_n",
-            "force_z_n",
-            "motor_torque_x_nm",
-            "motor_torque_z_nm",
-        ])
-
-    def close(self) -> None:
-        if self.file is not None:
-            self.file.close()
-            self.file = None
-
-    def _axis_command(self, error: float) -> tuple[float, float, float]:
-        velocity = max(-_CARRIAGE_MAX_SPEED_MPS, min(_CARRIAGE_MAX_SPEED_MPS, _CARRIAGE_KP * error))
-        force = max(-_CARRIAGE_MAX_FORCE_N, min(_CARRIAGE_MAX_FORCE_N, 40.0 * error))
-        torque = force * _CARRIAGE_MOTOR_PULLY_RADIUS_M / _CARRIAGE_MOTOR_GEAR_RATIO
-        return velocity, force, torque
-
-    def step(self, time_s: float) -> None:
-        target_x, target_z = self.waypoints[self.index]
-        ex = target_x - self.x
-        ez = target_z - self.z
-        self.vx, self.fx, tx = self._axis_command(ex)
-        self.vz, self.fz, tz = self._axis_command(ez)
-
-        self.x += self.vx * self.dt
-        self.z += self.vz * self.dt
-        if abs(ex) < 0.015 and abs(ez) < 0.015:
-            self.index = (self.index + 1) % len(self.waypoints)
-
-        self.x_drive.GetTargetVelocityAttr().Set(self.vx)
-        self.z_drive.GetTargetVelocityAttr().Set(self.vz)
-        self.x_drive.GetMaxForceAttr().Set(abs(self.fx))
-        self.z_drive.GetMaxForceAttr().Set(abs(self.fz))
-
-        if self.writer is not None:
-            noise = _CARRIAGE_ENCODER_NOISE_M * math.sin(17.0 * time_s)
-            self.writer.writerow([
-                f"{time_s:.4f}",
-                self.index,
-                f"{target_x:.4f}",
-                f"{target_z:.4f}",
-                f"{self.x + noise:.5f}",
-                f"{self.z - noise:.5f}",
-                f"{self.vx:.5f}",
-                f"{self.vz:.5f}",
-                f"{self.fx:.3f}",
-                f"{self.fz:.3f}",
-                f"{tx:.5f}",
-                f"{tz:.5f}",
-            ])
-
-
-def _start_pose_listener() -> None:
-    """Background thread: subscribe to /robot/pose, push (x, y, yaw) into _pose_q."""
-    try:
-        import rclpy
-        from geometry_msgs.msg import PoseStamped
-
-        ctx = rclpy.Context()
-        rclpy.init(context=ctx)
-        node = rclpy.create_node("isaac_pose_follower", context=ctx)
-        print("[pose_listener] started, waiting for /robot/pose ...", flush=True)
-
-        _first = [True]
-
-        def _cb(msg: PoseStamped) -> None:
-            x = msg.pose.position.x
-            y = msg.pose.position.y
-            q = msg.pose.orientation
-            yaw = 2.0 * math.atan2(q.z, q.w)
-            if _first[0]:
-                print(f"[pose_listener] first pose received  x={x:.3f}  y={y:.3f}  yaw={math.degrees(yaw):.1f}°", flush=True)
-                _first[0] = False
-            try:
-                _pose_q.get_nowait()
-            except queue.Empty:
-                pass
-            _pose_q.put_nowait((x, y, yaw))
-
-        node.create_subscription(PoseStamped, "/robot/pose", _cb, 10)
-        exec_ = rclpy.executors.SingleThreadedExecutor(context=ctx)
-        exec_.add_node(node)
-        exec_.spin()
-    except Exception as exc:
-        print(f"[pose_listener] FAILED: {exc}", flush=True)
-
-
-def _create_xform(stage, path: str, translation=(0.0, 0.0, 0.0)):
-    xform = UsdGeom.Xform.Define(stage, path)
-    xform.AddTranslateOp().Set(Gf.Vec3d(*translation))
-    return xform
-
-
-def _create_box(stage, path, size, translation, color):
+def _create_box(stage, path: str, size, translation, color):
     cube = UsdGeom.Cube.Define(stage, path)
     cube.CreateSizeAttr(1.0)
     cube.AddTranslateOp().Set(Gf.Vec3d(*translation))
@@ -300,19 +94,43 @@ def _create_box(stage, path, size, translation, color):
     return cube
 
 
-def _add_collision(prim):
+def _add_collision(prim) -> None:
     UsdPhysics.CollisionAPI.Apply(prim)
 
 
-def _make_rigid(prim, mass_kg=None, *, kinematic=False):
+def _make_rigid(prim, mass_kg=None, *, kinematic=False) -> None:
     rb = UsdPhysics.RigidBodyAPI.Apply(prim)
     rb.CreateKinematicEnabledAttr(kinematic)
     if mass_kg is not None:
         UsdPhysics.MassAPI.Apply(prim).CreateMassAttr(float(mass_kg))
 
 
-def _segment_count(length_m: float, asset_length_m: float) -> int:
-    return max(1, round(length_m / asset_length_m))
+def _add_custom_attr(prim, name: str, value) -> None:
+    if isinstance(value, bool):
+        attr_type = Sdf.ValueTypeNames.Bool
+    elif isinstance(value, int):
+        attr_type = Sdf.ValueTypeNames.Int
+    elif isinstance(value, float):
+        attr_type = Sdf.ValueTypeNames.Double
+    else:
+        attr_type = Sdf.ValueTypeNames.String
+        value = str(value)
+    prim.CreateAttribute(name, attr_type, custom=True).Set(value)
+
+
+def _vec3_from_config(values, default: tuple[float, float, float]) -> tuple[float, float, float]:
+    if not isinstance(values, (list, tuple)) or len(values) != 3:
+        return default
+    return (float(values[0]), float(values[1]), float(values[2]))
+
+
+def _project_path(path_value: str | None, default: Path) -> Path:
+    if not path_value:
+        return default
+    path = Path(path_value)
+    if path.is_absolute():
+        return path
+    return PROJECT_ROOT / path
 
 
 def _add_xyz_rotation_ops(xform: UsdGeom.Xform, rotation_deg: tuple[float, float, float]) -> None:
@@ -322,301 +140,341 @@ def _add_xyz_rotation_ops(xform: UsdGeom.Xform, rotation_deg: tuple[float, float
     xform.AddRotateZOp().Set(float(rz))
 
 
-def _add_rail(
-    stage, path: str, world_pos: tuple, *,
-    vertical: bool = False, kinematic: bool = True,
-    mass_kg: float = 5.0, enable_collision: bool = True,
-    visual_rotate_y_deg: float = -90.0,
-) -> UsdGeom.Xform:
-    """One horizontal_rail.usd segment placed in world space.
-
-    vertical=False: long axis → World X  (Rz −90°)
-    vertical=True:  long axis → World Z  (Rx +90°)
-    Collider box dims are the same (width × length × depth) in the prim's local frame.
-    """
-    prim = UsdGeom.Xform.Define(stage, path)
-    prim.AddTranslateOp().Set(Gf.Vec3d(*world_pos))
-    if vertical:
-        prim.AddRotateXOp().Set(90.0)   # asset Y → World Z
-    else:
-        prim.AddRotateZOp().Set(-90.0)  # asset Y → World X
-
-    if kinematic:
-        _make_rigid(prim.GetPrim(), kinematic=True)
-    else:
-        _make_rigid(prim.GetPrim(), mass_kg=mass_kg)
-
-    if RAIL_ASSET_PATH.exists():
-        vis = UsdGeom.Xform.Define(stage, f"{path}/visual")
-        vis.AddScaleOp().Set(Gf.Vec3f(_RAIL_UNIT_SCALE, _RAIL_UNIT_SCALE, _RAIL_UNIT_SCALE))
-        vis.AddRotateYOp().Set(visual_rotate_y_deg)
-        asset_ref = UsdGeom.Xform.Define(stage, f"{path}/visual/asset")
-        asset_ref.GetPrim().GetReferences().AddReference(str(RAIL_ASSET_PATH))
-
-    coll = _create_box(
-        stage, f"{path}/collider",
-        (_RAIL_WIDTH_M, _RAIL_LENGTH_M, _RAIL_DEPTH_M),
-        (0.0, 0.0, 0.0), (0.10, 0.28, 0.52),
+def _facade_y_offset(x_m, z_m):
+    # Sensor sits at negative Y and looks toward +Y, so visible protrusions
+    # toward the sensor are negative Y. Craters/recesses are positive Y.
+    bow = -0.045 * (1.0 - (x_m / 5.0) ** 2) * (1.0 - ((z_m - 5.0) / 5.0) ** 2)
+    waves = (
+        -0.006 * math.sin(1.5 * x_m + 0.4) * math.sin(1.2 * z_m)
+        -0.0025 * math.sin(8.5 * x_m + 1.7) * math.sin(7.0 * z_m)
     )
-    if enable_collision:
-        _add_collision(coll.GetPrim())
-    UsdGeom.Imageable(coll.GetPrim()).MakeInvisible()
-    return prim
-
-
-def _create_h_rows(stage, config: MvpSceneConfig, base_z: float) -> None:
-    """Kinematic horizontal rail rows.
-
-    Row 3 is created as USD children of the upper column halves so it follows the
-    deployment fold. This function only creates fixed rows.
-    """
-    y = -config.facade_standoff_m
-    segs_per_row = round(config.grid_width_m / _RAIL_LENGTH_M)
-    ox = -0.5 * config.grid_width_m + 0.5 * _RAIL_LENGTH_M
-    for r in (0, 1):
-        if r > config.grid_rows:
-            continue
-        z = base_z + r * config.module_height_m
-        for s in range(segs_per_row):
-            _add_rail(
-                stage,
-                f"/World/hrow{r}_seg{s}",
-                (ox + s * _RAIL_LENGTH_M, y, z),
-                visual_rotate_y_deg=0.0,
-            )
-
-
-def _create_v_columns(stage, config: MvpSceneConfig, base_z: float) -> list:
-    """For each even column create lower (kinematic, articulation base) + upper (dynamic).
-
-    ArticulationRootAPI goes on the kinematic LOWER half (fixed base).  The joint is
-    placed outside both body prims to avoid USD hierarchy ambiguity.  A top horizontal
-    rail visual is added as a USD child of each upper half so it follows the fold for free.
-    Returns a list of DriveAPI objects, one per column.
-    """
-    drives = []
-    half = config.grid_height_m / 2.0
-    y = -config.facade_standoff_m
-    ox = -0.5 * config.grid_width_m
-
-    for c in range(config.grid_columns + 1):
-        if c % 2 != 0:
-            continue
-        x = ox + c * config.module_width_m
-
-        lower_path = f"/World/col{c}_lower"
-        upper_path = f"/World/col{c}_upper"
-
-        # Lower half: kinematic fixed base of this column's articulation
-        _add_rail(stage, lower_path, (x, y, base_z + half / 2.0), vertical=True)
-        UsdPhysics.ArticulationRootAPI.Apply(stage.GetPrimAtPath(lower_path))
-
-        # Upper half: dynamic leaf — NO ArticulationRootAPI here (root is on lower)
-        # Collision disabled so the fold isn't blocked by kinematic horizontal rails
-        _add_rail(stage, upper_path, (x, y, base_z + half + half / 2.0), vertical=True,
-                  kinematic=False, mass_kg=4.0, enable_collision=False)
-
-        # Row 3 horizontal rail — visual-only child of upper half.
-        # Placed at upper-local Y=0, i.e. the middle of the upper vertical rail.
-        # Rz(-90°) in upper-local makes asset Y → upper-local X = World X.
-        # As the upper half folds, the rail follows the deployment kinematics.
-        if config.grid_rows >= 3 and c < config.grid_columns:
-            h = UsdGeom.Xform.Define(stage, f"{upper_path}/hrow3_seg{c // 2}")
-            h.AddTranslateOp().Set(Gf.Vec3f(1.0, 0.0, 0.0))
-            h.AddRotateZOp().Set(-90.0)
-            if RAIL_ASSET_PATH.exists():
-                vis = UsdGeom.Xform.Define(stage, f"{upper_path}/hrow3_seg{c // 2}/visual")
-                vis.AddScaleOp().Set(Gf.Vec3f(_RAIL_UNIT_SCALE, _RAIL_UNIT_SCALE, _RAIL_UNIT_SCALE))
-                vis.AddRotateYOp().Set(-90.0)
-                aref = UsdGeom.Xform.Define(stage, f"{upper_path}/hrow3_seg{c // 2}/visual/asset")
-                aref.GetPrim().GetReferences().AddReference(str(RAIL_ASSET_PATH))
-
-        lower_prim = stage.GetPrimAtPath(lower_path)
-        upper_prim = stage.GetPrimAtPath(upper_path)
-
-        # Joint is a sibling of both bodies at /World level — avoids USD hierarchy issues
-        joint = UsdPhysics.RevoluteJoint.Define(stage, f"/World/col{c}_fold_joint")
-        joint.CreateBody0Rel().SetTargets([lower_prim.GetPath()])
-        joint.CreateBody1Rel().SetTargets([upper_prim.GetPath()])
-        joint.CreateAxisAttr().Set("X")
-        # local Y = World Z for both bodies (Rx 90° applied), so half/2 in local Y = top/bottom
-        joint.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, half / 2.0, 0.0))
-        joint.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, -half / 2.0, 0.0))
-        joint.CreateLocalRot0Attr().Set(Gf.Quatf(1.0))
-        joint.CreateLocalRot1Attr().Set(Gf.Quatf(1.0))
-        joint.CreateLowerLimitAttr().Set(0.0)
-        joint.CreateUpperLimitAttr().Set(0.0)
-        joint.CreateCollisionEnabledAttr().Set(False)
-
-        drive = UsdPhysics.DriveAPI.Apply(joint.GetPrim(), "angular")
-        drive.CreateTypeAttr().Set("force")
-        drive.CreateTargetVelocityAttr().Set(0.0)
-        drive.CreateStiffnessAttr().Set(0.0)
-        drive.CreateDampingAttr().Set(50.0)
-        drive.CreateMaxForceAttr().Set(300.0)
-
-        drives.append(drive)
-
-        # Deployment motor visual — CAD asset at the fold junction.
-        # It is offset toward the viewer so it does not hide inside the rail mesh.
-        motor_path = f"/World/col{c}_motor_vis"
-        motor_xf = UsdGeom.Xform.Define(stage, motor_path)
-        motor_y = y + _DEPLOY_MOTOR_Y_OFFSET_M
-        motor_xf.AddTranslateOp().Set(Gf.Vec3d(x, motor_y, base_z + half))
-        _add_xyz_rotation_ops(motor_xf, _DEPLOY_MOTOR_ROTATION_DEG)
-        if DEPLOY_MOTOR_ASSET_PATH.exists():
-            vis = UsdGeom.Xform.Define(stage, f"{motor_path}/visual")
-            vis.AddScaleOp().Set(Gf.Vec3f(
-                _DEPLOY_MOTOR_UNIT_SCALE,
-                _DEPLOY_MOTOR_UNIT_SCALE,
-                _DEPLOY_MOTOR_UNIT_SCALE,
-            ))
-            aref = UsdGeom.Xform.Define(stage, f"{motor_path}/visual/asset")
-            aref.GetPrim().GetReferences().AddReference(str(DEPLOY_MOTOR_ASSET_PATH))
-        else:
-            motor_sz = _RAIL_WIDTH_M * 1.4
-            _create_box(
-                stage, f"{motor_path}/fallback",
-                (0.22, motor_sz, motor_sz),
-                (0.0, 0.0, 0.0),
-                (0.95, 0.48, 0.02),
-            )
-
-    print(f"[deploy] {len(drives)} column fold joints created", flush=True)
-    return drives
-
-
-def _grid_local_to_world(config: MvpSceneConfig, grid_center_z: float, local):
-    x, y, z = local
-    return (x, -config.facade_standoff_m - z, grid_center_z + y)
-
-
-def _quat_x(degrees: float) -> Gf.Quatf:
-    half_angle = math.radians(degrees) * 0.5
-    return Gf.Quatf(
-        math.cos(half_angle),
-        Gf.Vec3f(math.sin(half_angle), 0.0, 0.0),
-    )
-
-
-def _create_carriage_waypoints(config: MvpSceneConfig) -> list[tuple[float, float]]:
-    xs = [
-        -0.5 * config.grid_width_m + c * config.module_width_m
-        for c in range(config.grid_columns + 1)
-        if c % 2 == 0
+    dents = [
+        (-2.2, 2.8, 0.35, 0.42, 0.045),
+        (1.9, 6.8, 0.55, 0.36, 0.036),
+        (3.6, 3.2, 0.42, 0.46, 0.030),
+        (-3.5, 7.4, 0.45, 0.34, 0.040),
+        (0.1, 4.8, 0.22, 0.20, 0.020),
+        (-4.4, 5.9, 0.18, 0.25, 0.018),
     ]
-    z_min = -0.5 * config.grid_height_m + 0.25
-    z_max = 0.5 * config.grid_height_m - 0.25
-    waypoints: list[tuple[float, float]] = []
-    for index, x in enumerate(xs):
-        if index % 2 == 0:
-            waypoints.extend([(x, z_min), (x, z_max)])
-        else:
-            waypoints.extend([(x, z_max), (x, z_min)])
-    return waypoints
+    bumps = [
+        (-1.1, 5.7, 0.48, 0.38, -0.030),
+        (2.8, 1.6, 0.35, 0.36, -0.026),
+        (-4.0, 4.2, 0.30, 0.48, -0.020),
+        (0.4, 8.4, 0.55, 0.32, -0.028),
+        (4.1, 8.0, 0.26, 0.22, -0.016),
+    ]
+    fine_pits = [
+        (-0.9, 1.5, 0.055, 0.060, 0.006),
+        (-0.1, 2.9, 0.040, 0.055, 0.005),
+        (1.4, 4.2, 0.050, 0.045, 0.006),
+        (2.7, 5.4, 0.065, 0.055, 0.007),
+        (-3.9, 6.1, 0.045, 0.070, 0.006),
+        (-2.6, 8.7, 0.055, 0.055, 0.005),
+        (3.8, 7.2, 0.050, 0.050, 0.006),
+        (4.5, 3.9, 0.040, 0.045, 0.004),
+    ]
+    fine_bumps = [
+        (-1.8, 1.9, 0.050, 0.050, -0.004),
+        (0.7, 3.7, 0.060, 0.045, -0.005),
+        (2.2, 8.8, 0.045, 0.060, -0.004),
+        (-4.4, 2.9, 0.055, 0.040, -0.004),
+    ]
+    defects = 0.0
+    for cx, cz, sx, sz, amp in dents + bumps + fine_pits + fine_bumps:
+        defects += amp * math.exp(-(((x_m - cx) / sx) ** 2 + ((z_m - cz) / sz) ** 2))
+    joints = 0.0
+    for joint_x, phase in ((-3.2, 0.0), (-1.1, 0.8), (1.2, 1.9), (3.4, 2.7)):
+        center = joint_x + 0.035 * math.sin(1.7 * z_m + phase) + 0.012 * math.sin(6.5 * z_m + phase)
+        width = 0.018 + 0.010 * (0.5 + 0.5 * math.sin(3.1 * z_m + phase))
+        if abs(x_m - center) < width:
+            joints += 0.009
+    for joint_z, phase in ((2.2, 0.4), (5.0, 1.5), (7.8, 2.1)):
+        center = joint_z + 0.030 * math.sin(1.4 * x_m + phase) + 0.010 * math.sin(5.5 * x_m)
+        width = 0.016 + 0.008 * (0.5 + 0.5 * math.sin(2.5 * x_m + phase))
+        if abs(z_m - center) < width:
+            joints += 0.006
+    patches = 0.0
+    for x0, x1, z0, z1, offset in (
+        (-4.4, -3.5, 0.9, 1.7, 0.006),
+        (-0.7, 0.1, 3.2, 4.1, 0.005),
+        (2.3, 3.5, 7.0, 8.0, 0.007),
+        (-2.8, -1.7, 8.2, 9.1, 0.005),
+    ):
+        if x0 < x_m < x1 and z0 < z_m < z1:
+            patches += offset
+    return bow + waves + defects + joints + patches
 
 
-def _create_physical_carriage(stage, config: MvpSceneConfig, grid_center_z: float):
-    if not CARRIAGE_ASSET_PATH.exists():
-        return None
-    rail_column = 2
-    rail_x = -0.5 * config.grid_width_m + rail_column * config.module_width_m
-    rail_local_z = 0.5 * (_RAIL_DEPTH_M + _CARRIAGE_DEPTH_M)
-    rail_local = (rail_x, 0.0, rail_local_z)
-    carriage_world = _grid_local_to_world(config, grid_center_z, rail_local)
+def _surface_front_y(x_m: float, z_m: float, depth_m: float, clearance_m: float = 0.006) -> float:
+    """Place a flat visual marker just in front of the local facade surface."""
+    return _facade_y_offset(x_m, z_m) - depth_m / 2.0 - clearance_m
 
-    x_axis = UsdGeom.Xform.Define(stage, CARRIAGE_X_AXIS_PATH)
-    x_axis.AddTranslateOp().Set(Gf.Vec3d(*carriage_world))
-    _make_rigid(x_axis.GetPrim(), 0.8)
-    x_axis_collider = _create_box(
+
+def _create_defect_facade(stage) -> None:
+    facade = UsdGeom.Xform.Define(stage, FACADE_PATH)
+    _make_rigid(facade.GetPrim(), 1.0e9, kinematic=True)
+
+    resolution = 180
+    xs = [
+        -FACADE_WIDTH_M / 2.0 + FACADE_WIDTH_M * i / (resolution - 1)
+        for i in range(resolution)
+    ]
+    zs = [FACADE_HEIGHT_M * i / (resolution - 1) for i in range(resolution)]
+    points = []
+    for z in zs:
+        for x in xs:
+            points.append(Gf.Vec3f(x, _facade_y_offset(x, z), z))
+
+    counts = []
+    indices = []
+    for row in range(resolution - 1):
+        for col in range(resolution - 1):
+            i = row * resolution + col
+            counts.append(4)
+            indices.extend([i, i + 1, i + resolution + 1, i + resolution])
+
+    surface = UsdGeom.Mesh.Define(stage, f"{FACADE_PATH}/surface")
+    surface.CreatePointsAttr(Vt.Vec3fArray(points))
+    surface.CreateFaceVertexCountsAttr(Vt.IntArray(counts))
+    surface.CreateFaceVertexIndicesAttr(Vt.IntArray(indices))
+    surface.CreateSubdivisionSchemeAttr("none")
+    surface.CreateDisplayColorAttr(Vt.Vec3fArray([Gf.Vec3f(0.56, 0.58, 0.60)]))
+    surface.CreateDoubleSidedAttr(True)
+    _add_collision(surface.GetPrim())
+
+    # Visible windows: recessed dark panels with light frames.
+    window_specs = [
+        ("window_a", (-3.7, 2.0), (0.80, 0.014, 0.95)),
+        ("window_b", (0.9, 2.7), (0.95, 0.014, 1.20)),
+        ("window_c", (3.3, 6.1), (0.75, 0.014, 1.00)),
+        ("window_d", (-1.9, 7.2), (1.10, 0.014, 1.25)),
+    ]
+    for name, xz, size in window_specs:
+        x, z = xz
+        sx, sy, sz = size
+        y = _surface_front_y(x, z, sy, clearance_m=0.020)
+        window = _create_box(stage, f"{FACADE_PATH}/{name}_glass", size, (x, y, z), (0.04, 0.08, 0.12))
+        _add_collision(window.GetPrim())
+        for suffix, frame_size, frame_xz in (
+            ("top", (sx + 0.12, 0.018, 0.04), (x, z + sz / 2.0 + 0.045)),
+            ("bottom", (sx + 0.12, 0.018, 0.04), (x, z - sz / 2.0 - 0.045)),
+            ("left", (0.04, 0.018, sz + 0.12), (x - sx / 2.0 - 0.045, z)),
+            ("right", (0.04, 0.018, sz + 0.12), (x + sx / 2.0 + 0.045, z)),
+        ):
+            fx, fz = frame_xz
+            fy = _surface_front_y(fx, fz, frame_size[1], clearance_m=0.004)
+            _create_box(stage, f"{FACADE_PATH}/{name}_{suffix}", frame_size, (fx, fy, fz), (0.88, 0.86, 0.80))
+
+    # High-contrast markers for defects/repair patches.
+    for idx, size, pos, color in (
+        (0, (0.90, 0.014, 0.75), (-3.95, 1.30), (0.70, 0.68, 0.60)),
+        (1, (0.80, 0.014, 0.90), (-0.30, 3.65), (0.78, 0.74, 0.65)),
+        (2, (1.20, 0.014, 0.95), (2.90, 7.50), (0.65, 0.62, 0.56)),
+        (3, (1.10, 0.014, 0.70), (-2.25, 8.65), (0.46, 0.45, 0.44)),
+    ):
+        x, z = pos
+        y = _surface_front_y(x, z, size[1], clearance_m=0.004)
+        _create_box(stage, f"{FACADE_PATH}/repair_patch_{idx}", size, (x, y, z), color)
+
+    for j, (base_x, phase) in enumerate(((-3.2, 0.0), (-1.1, 0.8), (1.2, 1.9), (3.4, 2.7))):
+        for seg in range(14):
+            z = 0.45 + seg * 0.68
+            x = base_x + 0.035 * math.sin(1.7 * z + phase) + 0.012 * math.sin(6.5 * z + phase)
+            height = 0.42 + 0.10 * math.sin(2.3 * seg + phase)
+            width = 0.018 + 0.006 * ((seg + j) % 3)
+            _create_box(
+                stage,
+                f"{FACADE_PATH}/vertical_joint_marker_{j}_{seg}",
+                (width, 0.016, height),
+                (x, _surface_front_y(x, z, 0.016, clearance_m=0.003), z),
+                (0.28, 0.28, 0.30),
+            )
+    for j, (base_z, phase) in enumerate(((2.2, 0.4), (5.0, 1.5), (7.8, 2.1))):
+        for seg in range(13):
+            x = -4.5 + seg * 0.75
+            z = base_z + 0.030 * math.sin(1.4 * x + phase) + 0.010 * math.sin(5.5 * x)
+            length = 0.45 + 0.15 * math.sin(1.7 * seg + phase)
+            height = 0.018 + 0.006 * ((seg + j) % 2)
+            _create_box(
+                stage,
+                f"{FACADE_PATH}/horizontal_joint_marker_{j}_{seg}",
+                (length, 0.016, height),
+                (x, _surface_front_y(x, z, 0.016, clearance_m=0.003), z),
+                (0.34, 0.34, 0.36),
+            )
+
+    # Small visible chips/cracks.
+    for idx, x, z, sx, sz in (
+        (0, -2.2, 2.8, 0.18, 0.07),
+        (1, 1.9, 6.8, 0.24, 0.08),
+        (2, 3.6, 3.2, 0.16, 0.06),
+        (3, -3.5, 7.4, 0.22, 0.06),
+        (4, 0.4, 8.4, 0.28, 0.06),
+    ):
+        _create_box(
+            stage,
+            f"{FACADE_PATH}/chip_marker_{idx}",
+            (sx, 0.016, sz),
+            (x, _surface_front_y(x, z, 0.016, clearance_m=0.003), z),
+            (0.18, 0.18, 0.19),
+        )
+
+    # Fine pitting markers visible in close inspection.
+    for idx, x, z in (
+        (0, -0.9, 1.5),
+        (1, -0.1, 2.9),
+        (2, 1.4, 4.2),
+        (3, 2.7, 5.4),
+        (4, -3.9, 6.1),
+        (5, -2.6, 8.7),
+        (6, 3.8, 7.2),
+        (7, 4.5, 3.9),
+    ):
+        _create_box(
+            stage,
+            f"{FACADE_PATH}/fine_pit_marker_{idx}",
+            (0.055, 0.012, 0.055),
+            (x, _surface_front_y(x, z, 0.012, clearance_m=0.002), z),
+            (0.12, 0.12, 0.13),
+        )
+
+
+def _add_scanner_frame_axes(stage, frame_path: str) -> None:
+    axis_specs = [
+        ("x_axis", (0.10, 0.004, 0.004), (0.05, 0.0, 0.0), (1.0, 0.05, 0.05)),
+        ("y_axis", (0.004, 0.10, 0.004), (0.0, 0.05, 0.0), (0.05, 1.0, 0.05)),
+        ("z_axis", (0.004, 0.004, 0.10), (0.0, 0.0, 0.05), (0.05, 0.2, 1.0)),
+    ]
+    for name, size, translation, color in axis_specs:
+        _create_box(stage, f"{frame_path}/{name}", size, translation, color)
+
+
+def _add_profile_scan_volume(stage, sensor_path: str, datasheet: dict) -> None:
+    cd_m = float(datasheet.get("clearance_distance_mm", 325)) * 0.001
+    mr_m = float(datasheet.get("z_measurement_range_mm", 1550)) * 0.001
+    near_fov_m = float(datasheet.get("x_fov_near_mm", 385)) * 0.001
+    far_fov_m = float(datasheet.get("x_fov_far_mm", 2000)) * 0.001
+    end_m = cd_m + mr_m
+
+    scan = UsdGeom.Xform.Define(stage, f"{sensor_path}/scan_volume")
+    scan_prim = scan.GetPrim()
+    _add_custom_attr(scan_prim, "clearance_distance_mm", int(round(cd_m * 1000.0)))
+    _add_custom_attr(scan_prim, "measurement_range_mm", int(round(mr_m * 1000.0)))
+    _add_custom_attr(scan_prim, "x_fov_near_mm", int(round(near_fov_m * 1000.0)))
+    _add_custom_attr(scan_prim, "x_fov_far_mm", int(round(far_fov_m * 1000.0)))
+
+    plane = UsdGeom.Mesh.Define(stage, f"{sensor_path}/scan_volume/profile_fov")
+    plane.CreatePointsAttr(Vt.Vec3fArray([
+        Gf.Vec3f(-near_fov_m / 2.0, 0.0, cd_m),
+        Gf.Vec3f(near_fov_m / 2.0, 0.0, cd_m),
+        Gf.Vec3f(far_fov_m / 2.0, 0.0, end_m),
+        Gf.Vec3f(-far_fov_m / 2.0, 0.0, end_m),
+    ]))
+    plane.CreateFaceVertexCountsAttr(Vt.IntArray([4]))
+    plane.CreateFaceVertexIndicesAttr(Vt.IntArray([0, 1, 2, 3]))
+    plane.CreateSubdivisionSchemeAttr("none")
+    plane.CreateDoubleSidedAttr(True)
+    plane.CreateDisplayColorAttr(Vt.Vec3fArray([Gf.Vec3f(0.1, 0.45, 1.0)]))
+    plane.CreateDisplayOpacityAttr(Vt.FloatArray([0.28]))
+
+    edge_color = (0.05, 0.35, 1.0)
+    _create_box(stage, f"{sensor_path}/scan_volume/near_profile_width", (near_fov_m, 0.006, 0.006), (0.0, 0.0, cd_m), edge_color)
+    _create_box(stage, f"{sensor_path}/scan_volume/far_profile_width", (far_fov_m, 0.006, 0.006), (0.0, 0.0, end_m), edge_color)
+
+
+def _create_gocator_sensor(stage) -> str | None:
+    config = _SENSOR_CONFIG.get("gocator2690", {})
+    metadata = {
+        "model": "Gocator 2690",
+        "generated_usd": "assets/cad/sensors/gocator2690/gocator2690_visual.usd",
+        "datasheet_values": {
+            "x_fov_near_mm": 385,
+            "x_fov_far_mm": 2000,
+            "clearance_distance_mm": 325,
+            "z_measurement_range_mm": 1550,
+            "nominal_standoff_mm": 1000,
+            "points_per_profile": 3700,
+            "nominal_profile_rate_hz": 40,
+        },
+        "housing_collision_envelope_m": {"x": 0.055, "y": 0.105, "z": 0.291},
+        **_GOCATOR2690_METADATA,
+    }
+    datasheet = {**metadata.get("datasheet_values", {})}
+    for attr_name in (
+        "x_fov_near_mm",
+        "x_fov_far_mm",
+        "z_measurement_range_mm",
+        "clearance_distance_mm",
+        "nominal_standoff_mm",
+        "points_per_profile",
+        "nominal_profile_rate_hz",
+        "wavelength_nm",
+        "ip_rating",
+    ):
+        if attr_name in config:
+            datasheet[attr_name] = config[attr_name]
+
+    asset_path = _project_path(config.get("usd_asset_path"), PROJECT_ROOT / metadata["generated_usd"])
+    mount_path = f"{ROBOT_ROOT_PATH}/scanner_mount_link"
+    sensor_path = f"{mount_path}/{SENSOR_NAME}"
+
+    robot = UsdGeom.Xform.Define(stage, ROBOT_ROOT_PATH)
+    robot.AddTranslateOp().Set(Gf.Vec3d(0.0, -SENSOR_STANDOFF_M, SENSOR_HEIGHT_M))
+    mount = UsdGeom.Xform.Define(stage, mount_path)
+    mount.AddTranslateOp().Set(Gf.Vec3d(0.0, 0.0, 0.0))
+
+    sensor = UsdGeom.Xform.Define(stage, sensor_path)
+    # Optical frame: X profile width, Y scanner travel, Z measurement toward facade.
+    sensor.AddOrientOp().Set(Gf.Quatf(0.0, Gf.Vec3f(0.0, 0.70710678, 0.70710678)))
+    sensor_prim = sensor.GetPrim()
+    _add_custom_attr(sensor_prim, "model", metadata["model"])
+    for attr_name, value in datasheet.items():
+        _add_custom_attr(sensor_prim, attr_name, value)
+
+    sensor_pose = config.get("sensor_pose_on_mount", {})
+    sensor_rpy = _vec3_from_config(sensor_pose.get("rpy_deg", [-90.0, 0.0, 180.0]), (-90.0, 0.0, 180.0))
+    visual = UsdGeom.Xform.Define(stage, f"{sensor_path}/visual")
+    _add_xyz_rotation_ops(visual, sensor_rpy)
+    visual_asset = UsdGeom.Xform.Define(stage, f"{sensor_path}/visual/asset")
+    if asset_path.exists():
+        visual_asset.GetPrim().GetReferences().AddReference(str(asset_path))
+    else:
+        _create_box(stage, f"{sensor_path}/visual/fallback_body", (0.055, 0.105, 0.291), (0.0, 0.0, 0.0), (0.05, 0.07, 0.08))
+        print(f"[gocator2690] visual asset missing, using fallback: {asset_path}", flush=True)
+
+    envelope = metadata.get("housing_collision_envelope_m", {})
+    collision = UsdGeom.Xform.Define(stage, f"{sensor_path}/collision")
+    _add_xyz_rotation_ops(collision, sensor_rpy)
+    body = _create_box(
         stage,
-        f"{CARRIAGE_X_AXIS_PATH}/collider",
-        (0.06, 0.06, 0.06),
+        f"{sensor_path}/collision/body",
+        (
+            float(envelope.get("x", 0.055)),
+            float(envelope.get("y", 0.105)),
+            float(envelope.get("z", 0.291)),
+        ),
         (0.0, 0.0, 0.0),
-        (0.2, 0.2, 0.2),
+        (0.8, 0.25, 0.05),
     )
-    _add_collision(x_axis_collider.GetPrim())
-    UsdGeom.Imageable(x_axis_collider.GetPrim()).MakeInvisible()
+    _add_collision(body.GetPrim())
+    UsdGeom.Imageable(collision.GetPrim()).MakeInvisible()
 
-    path = CARRIAGE_PATH
-    carriage = UsdGeom.Xform.Define(stage, path)
-    carriage.AddTranslateOp().Set(Gf.Vec3d(*carriage_world))
-    _make_rigid(carriage.GetPrim(), 2.0)
+    scanner_frame = UsdGeom.Xform.Define(stage, f"{sensor_path}/scanner_frame")
+    scanner_frame.AddTranslateOp().Set(Gf.Vec3d(0.0, 0.0, 0.0))
+    _add_scanner_frame_axes(stage, f"{sensor_path}/scanner_frame")
+    _add_profile_scan_volume(stage, sensor_path, datasheet)
 
-    visual = UsdGeom.Xform.Define(stage, f"{path}/visual")
-    visual.AddScaleOp().Set(
-        Gf.Vec3f(_CARRIAGE_UNIT_SCALE, _CARRIAGE_UNIT_SCALE, _CARRIAGE_UNIT_SCALE)
-    )
-    asset = UsdGeom.Xform.Define(stage, f"{path}/visual/asset")
-    asset.AddTranslateOp().Set(Gf.Vec3d(0.0, 119.0, 0.0))
-    asset.AddRotateYOp().Set(90.0)
-    asset.GetPrim().GetReferences().AddReference(str(CARRIAGE_ASSET_PATH))
-
-    collider = _create_box(
-        stage,
-        f"{path}/collider",
-        (_CARRIAGE_WIDTH_M, _CARRIAGE_HEIGHT_M, _CARRIAGE_DEPTH_M),
-        (0.0, 0.0, 0.0),
-        (0.8, 0.15, 0.15),
-    )
-    _add_collision(collider.GetPrim())
-    UsdGeom.Imageable(collider.GetPrim()).MakeInvisible()
-
-    x_joint = UsdPhysics.PrismaticJoint.Define(stage, f"{path}/horizontal_slide_joint")
-    x_joint.CreateBody0Rel().SetTargets([stage.GetPrimAtPath(GRID_PATH).GetPath()])
-    x_joint.CreateBody1Rel().SetTargets([x_axis.GetPrim().GetPath()])
-    x_joint.CreateAxisAttr().Set("X")
-    x_joint.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, rail_local_z))
-    x_joint.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
-    x_joint.CreateLocalRot0Attr().Set(_quat_x(-90.0))
-    x_joint.CreateLocalRot1Attr().Set(Gf.Quatf(1.0))
-    x_joint.CreateLowerLimitAttr().Set(-0.5 * config.grid_width_m)
-    x_joint.CreateUpperLimitAttr().Set(0.5 * config.grid_width_m)
-    x_joint.CreateCollisionEnabledAttr().Set(False)
-
-    x_drive = UsdPhysics.DriveAPI.Apply(x_joint.GetPrim(), "linear")
-    x_drive.CreateTypeAttr().Set("force")
-    x_drive.CreateTargetVelocityAttr().Set(0.0)
-    x_drive.CreateDampingAttr().Set(150.0)
-    x_drive.CreateStiffnessAttr().Set(0.0)
-    x_drive.CreateMaxForceAttr().Set(_CARRIAGE_MAX_FORCE_N)
-
-    joint = UsdPhysics.PrismaticJoint.Define(stage, f"{path}/vertical_slide_joint")
-    joint.CreateBody0Rel().SetTargets([x_axis.GetPrim().GetPath()])
-    joint.CreateBody1Rel().SetTargets([carriage.GetPrim().GetPath()])
-    joint.CreateAxisAttr().Set("Z")
-    joint.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
-    joint.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
-    joint.CreateLocalRot0Attr().Set(Gf.Quatf(1.0))
-    joint.CreateLocalRot1Attr().Set(Gf.Quatf(1.0))
-    joint.CreateLowerLimitAttr().Set(-0.5 * config.grid_height_m)
-    joint.CreateUpperLimitAttr().Set(0.5 * config.grid_height_m)
-    joint.CreateCollisionEnabledAttr().Set(False)
-
-    drive = UsdPhysics.DriveAPI.Apply(joint.GetPrim(), "linear")
-    drive.CreateTypeAttr().Set("force")
-    drive.CreateTargetVelocityAttr().Set(0.0)
-    drive.CreateDampingAttr().Set(150.0)
-    drive.CreateStiffnessAttr().Set(0.0)
-    drive.CreateMaxForceAttr().Set(_CARRIAGE_MAX_FORCE_N)
-    return x_drive, drive, _create_carriage_waypoints(config)
+    print(f"[gocator2690] mounted sensor-only scene at {sensor_path}", flush=True)
+    return f"{sensor_path}/scanner_frame"
 
 
-def set_deploy_velocity(velocity_degs: float) -> None:
-    """Command all column fold joints: +v folds outward (deg/s), -v folds back, 0 holds."""
-    for drive in _deploy_drives:
-        drive.GetTargetVelocityAttr().Set(float(velocity_degs))
-
-
-def build_scene(config: MvpSceneConfig):
-    global _robot_translate_op, _robot_yaw_op, _robot_z, _deploy_drives, _carriage_controller
-
+def build_scene():
     stage_utils.create_new_stage()
     stage_utils.set_stage_units(meters_per_unit=1.0)
     stage = omni.usd.get_context().get_stage()
     UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
-    stage.DefinePrim("/World", "Xform")
-    stage.SetDefaultPrim(stage.GetPrimAtPath("/World"))
+    stage.DefinePrim(WORLD_PATH, "Xform")
+    stage.SetDefaultPrim(stage.GetPrimAtPath(WORLD_PATH))
 
     physics = UsdPhysics.Scene.Define(stage, "/World/PhysicsScene")
     physics.CreateGravityDirectionAttr().Set(Gf.Vec3f(0.0, 0.0, -1.0))
@@ -627,118 +485,23 @@ def build_scene(config: MvpSceneConfig):
     sun.CreateIntensityAttr(1200.0)
     sun.CreateAngleAttr(1.0)
 
-    ground = _create_box(stage, GROUND_PATH, (12.0, 8.0, 0.05), (0.0, 0.0, -0.025), (0.22, 0.24, 0.25))
+    ground = _create_box(stage, GROUND_PATH, (12.0, 6.0, 0.05), (0.0, -1.0, -0.025), (0.22, 0.24, 0.25))
     _add_collision(ground.GetPrim())
 
-    # ── Facade ──────────────────────────────────────────────────────────────
-    facade = UsdGeom.Xform.Define(stage, FACADE_PATH)
-    facade.AddTranslateOp().Set(Gf.Vec3d(0.0, 0.0, config.facade_height_m / 2.0))
-    facade.AddRotateXOp().Set(90.0)
-    _make_rigid(facade.GetPrim(), config.facade_mass_kg, kinematic=True)
-    surf = _create_box(
-        stage, f"{FACADE_PATH}/surface",
-        (config.facade_width_m, config.facade_height_m, 0.1),
-        (0.0, 0.0, -0.05), (0.55, 0.58, 0.62),
-    )
-    _add_collision(surf.GetPrim())
-
-    # ── Grid anchor (kinematic, no visual — used by carriage joint) ──────────
-    grid_center_z = _GRID_BASE_Z_M + config.grid_height_m / 2.0
-    grid = _create_xform(stage, GRID_PATH,
-                         (0.0, -config.facade_standoff_m, grid_center_z))
-    grid.AddRotateXOp().Set(90.0)
-    _make_rigid(grid.GetPrim(), config.grid_mass_kg, kinematic=True)
-
-    # ── Horizontal rail rows (kinematic surface rails) ────────────────────────
-    _create_h_rows(stage, config, _GRID_BASE_Z_M)
-
-    # ── Vertical columns (lower kinematic + upper dynamic with fold motor) ────
-    _deploy_drives = _create_v_columns(stage, config, _GRID_BASE_Z_M)
-
-    carriage_result = _create_physical_carriage(stage, config, grid_center_z)
-    if carriage_result is not None and not ARGS.no_carriage_control:
-        x_drive, z_drive, waypoints = carriage_result
-        log_path = (ARGS.carriage_log or PROJECT_ROOT / "outputs/isaac/carriage_telemetry.csv").resolve()
-        _carriage_controller = CarriageController(
-            x_drive=x_drive,
-            z_drive=z_drive,
-            waypoints=waypoints,
-            log_path=log_path,
-            dt=1.0 / config.simulation_frequency_hz,
-        )
-        print(f"[carriage] control sequence with {len(waypoints)} waypoints", flush=True)
-
+    _create_defect_facade(stage)
+    _create_gocator_sensor(stage)
     return stage
 
 
-def create_ros_graph() -> None:
-    keys = og.Controller.Keys
-    tf_edges = [
-        ("Facade", "", FACADE_PATH),
-        ("Grid",   "", GRID_PATH),
-    ]
-    tf_nodes, tf_connections, tf_values = [], [], []
-    for name, parent_path, child_path in tf_edges:
-        c, p = f"Compute{name}TF", f"Publish{name}TF"
-        tf_nodes += [
-            (c, "isaacsim.core.nodes.IsaacComputeTransformTree"),
-            (p, "isaacsim.ros2.bridge.ROS2PublishTransformTree"),
-        ]
-        tf_connections += [
-            ("OnPlaybackTick.outputs:tick",              f"{c}.inputs:execIn"),
-            (f"{c}.outputs:execOut",                     f"{p}.inputs:execIn"),
-            (f"{c}.outputs:parentFrames",                f"{p}.inputs:parentFrames"),
-            (f"{c}.outputs:childFrames",                 f"{p}.inputs:childFrames"),
-            (f"{c}.outputs:translations",                f"{p}.inputs:translations"),
-            (f"{c}.outputs:orientations",                f"{p}.inputs:orientations"),
-            ("ReadSimTime.outputs:simulationTime",       f"{p}.inputs:timeStamp"),
-        ]
-        tf_values += [
-            (f"{c}.inputs:targetPrims", [usdrt.Sdf.Path(child_path)]),
-            (f"{p}.inputs:topicName", "/tf"),
-        ]
-        if parent_path:
-            tf_values.append((f"{c}.inputs:parentPrim", [usdrt.Sdf.Path(parent_path)]))
-
-    og.Controller.edit(
-        {"graph_path": "/World/ROSGraph", "evaluator_name": "execution"},
-        {
-            keys.CREATE_NODES: [
-                ("OnPlaybackTick", "omni.graph.action.OnPlaybackTick"),
-                ("ReadSimTime",    "isaacsim.core.nodes.IsaacReadSimulationTime"),
-                ("PublishClock",   "isaacsim.ros2.bridge.ROS2PublishClock"),
-            ] + tf_nodes,
-            keys.CONNECT: [
-                ("OnPlaybackTick.outputs:tick",        "PublishClock.inputs:execIn"),
-                ("ReadSimTime.outputs:simulationTime", "PublishClock.inputs:timeStamp"),
-            ] + tf_connections,
-            keys.SET_VALUES: [
-                ("PublishClock.inputs:topicName", "/clock"),
-            ] + tf_values,
-        },
-    )
-
-
 def main() -> int:
-    config = MvpSceneConfig.from_directory(PROJECT_ROOT / "configs")
-    stage = build_scene(config)
+    stage = build_scene()
 
-    if not ARGS.test and not ARGS.no_ros:
-        app_utils.enable_extension("isaacsim.ros2.bridge")
-        simulation_app.update()
-        create_ros_graph()
-
-    out = (ARGS.output or PROJECT_ROOT / "outputs/isaac/teleop_scene.usda").resolve()
+    out = (ARGS.output or PROJECT_ROOT / "outputs/isaac/sensor_integration_scene.usda").resolve()
     out.parent.mkdir(parents=True, exist_ok=True)
     stage.GetRootLayer().Export(str(out))
     print(f"Saved scene: {out}", flush=True)
 
-    SimulationManager.setup_simulation(
-        dt=1.0 / config.simulation_frequency_hz, device="cpu"
-    )
-    if _carriage_controller is not None:
-        _carriage_controller.open()
-        print(f"[carriage] telemetry log: {_carriage_controller.log_path}", flush=True)
+    SimulationManager.setup_simulation(dt=1.0 / 60.0, device="cpu")
     app_utils.play()
     simulation_app.update()
 
@@ -747,30 +510,16 @@ def main() -> int:
         frame_limit = 10
 
     frame_count = 0
-    frame_period_s = 1.0 / config.simulation_frequency_hz
-
     while simulation_app.is_running():
         simulation_app.update()
         frame_count += 1
-
-        set_deploy_velocity(0.0)
-        if _carriage_controller is not None:
-            _carriage_controller.step(frame_count * frame_period_s)
-
-        if ARGS.realtime:
-            time.sleep(frame_period_s)
         if frame_limit > 0 and frame_count >= frame_limit:
+            print(f"Completed {frame_count} simulation frames", flush=True)
             break
 
-    app_utils.stop()
-    if _carriage_controller is not None:
-        _carriage_controller.close()
-    print(f"Completed {frame_count} simulation frames", flush=True)
+    simulation_app.close()
     return 0
 
 
 if __name__ == "__main__":
-    try:
-        raise SystemExit(main())
-    finally:
-        simulation_app.close()
+    raise SystemExit(main())

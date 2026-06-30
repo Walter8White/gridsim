@@ -1,0 +1,49 @@
+{
+  "model": "Gocator 2690",
+  "source_step": "assets/cad/sensors/gocator2690/gocator2690.step",
+  "generated_usd": "assets/cad/sensors/gocator2690/gocator2690_visual.usd",
+  "units": "meters",
+  "axis_convention": {
+    "x": "horizontal profile direction across the facade",
+    "y": "robot travel / profile stacking direction",
+    "z": "nominal measurement direction from sensor toward the facade"
+  },
+  "cad_axis_mapping": {
+    "asset_x": "STEP +X",
+    "asset_y": "STEP +Z",
+    "asset_z": "STEP +Y"
+  },
+  "bbox_m": {
+    "xmin": -0.0275,
+    "ymin": -0.105,
+    "zmin": -0.015,
+    "xmax": 0.0275,
+    "ymax": 0.0,
+    "zmax": 0.2758
+  },
+  "housing_collision_envelope_m": {
+    "x": 0.055,
+    "y": 0.105,
+    "z": 0.291
+  },
+  "scanner_frame_from_housing": {
+    "translation_m": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "rpy_deg": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "basis": "X profile, Y stacking, Z measurement; origin at sensor optical frame. Measurement volume starts at clearance_distance_mm and ends at clearance_distance_mm + z_measurement_range_mm."
+  },
+  "datasheet_values": {
+    "x_fov_near_mm": 385,
+    "x_fov_far_mm": 2000,
+    "z_measurement_range_mm": 1550,
+    "clearance_distance_mm": 325,
+    "nominal_standoff_mm": 1100
+  }
+}
