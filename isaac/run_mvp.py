@@ -24,6 +24,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--realtime", action="store_true")
     parser.add_argument("--frames", type=int, default=0)
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--scan-speed", type=float, default=0.6, help="Live scanner path speed in m/s.")
     # Kept as no-op compatibility flags for older scripts/commands.
     parser.add_argument("--motor-rotate-x", type=float, default=90.0, help=argparse.SUPPRESS)
     parser.add_argument("--motor-rotate-y", type=float, default=90.0, help=argparse.SUPPRESS)
@@ -83,6 +84,46 @@ def _load_gocator2690_metadata() -> dict:
 
 _SENSOR_CONFIG = _load_sensor_config()
 _GOCATOR2690_METADATA = _load_gocator2690_metadata()
+
+
+def _gocator2690_metadata_defaults() -> dict:
+    return {
+        "model": "Gocator 2690",
+        "generated_usd": "assets/cad/sensors/gocator2690/gocator2690_visual.usd",
+        "datasheet_values": {
+            "x_fov_near_mm": 385,
+            "x_fov_far_mm": 2000,
+            "clearance_distance_mm": 325,
+            "z_measurement_range_mm": 1550,
+            "nominal_standoff_mm": 1000,
+            "points_per_profile": 3700,
+            "nominal_profile_rate_hz": 40,
+        },
+        "housing_collision_envelope_m": {"x": 0.055, "y": 0.105, "z": 0.291},
+        **_GOCATOR2690_METADATA,
+    }
+
+
+def _gocator2690_datasheet(config: dict, metadata: dict) -> dict:
+    datasheet = {**metadata.get("datasheet_values", {})}
+    for attr_name in (
+        "x_fov_near_mm",
+        "x_fov_far_mm",
+        "z_measurement_range_mm",
+        "clearance_distance_mm",
+        "nominal_standoff_mm",
+        "points_per_profile",
+        "nominal_profile_rate_hz",
+        "wavelength_nm",
+        "ip_rating",
+    ):
+        if attr_name in config:
+            datasheet[attr_name] = config[attr_name]
+    return datasheet
+
+
+def _active_gocator2690_datasheet() -> dict:
+    return _gocator2690_datasheet(_SENSOR_CONFIG.get("gocator2690", {}), _gocator2690_metadata_defaults())
 
 
 def _create_box(stage, path: str, size, translation, color):
@@ -147,6 +188,58 @@ def _gocator_profile_width_m(datasheet: dict, distance_m: float = SENSOR_STANDOF
     far_fov_m = float(datasheet.get("x_fov_far_mm", 2000)) * 0.001
     alpha = (distance_m - clearance_m) / range_m
     return near_fov_m + alpha * (far_fov_m - near_fov_m)
+
+
+def _scan_pass_centers(datasheet: dict) -> list[float]:
+    profile_width_m = _gocator_profile_width_m(datasheet, SENSOR_STANDOFF_M)
+    first = -FACADE_WIDTH_M / 2.0 + profile_width_m / 2.0
+    last = FACADE_WIDTH_M / 2.0 - profile_width_m / 2.0
+    centers = []
+    x = first
+    while x <= last + 1e-9:
+        centers.append(float(x))
+        x += profile_width_m
+    if not centers or centers[-1] < last - 1e-6:
+        centers.append(float(last))
+    return centers
+
+
+def _scan_path_points(datasheet: dict) -> list[Gf.Vec3d]:
+    points: list[Gf.Vec3d] = []
+    top_z = FACADE_HEIGHT_M + 0.001
+    centers = _scan_pass_centers(datasheet)
+    for index, x_m in enumerate(centers):
+        z_start = 0.0 if index % 2 == 0 else top_z
+        z_end = top_z if index % 2 == 0 else 0.0
+        start = Gf.Vec3d(x_m, -SENSOR_STANDOFF_M, z_start)
+        end = Gf.Vec3d(x_m, -SENSOR_STANDOFF_M, z_end)
+        if not points:
+            points.append(start)
+        elif points[-1] != start:
+            points.append(start)
+        points.append(end)
+        if index + 1 < len(centers):
+            points.append(Gf.Vec3d(centers[index + 1], -SENSOR_STANDOFF_M, z_end))
+    return points
+
+
+def _scan_pose_at_time(datasheet: dict, elapsed_s: float, speed_m_s: float) -> Gf.Vec3d:
+    path = _scan_path_points(datasheet)
+    if len(path) < 2 or speed_m_s <= 0.0:
+        return path[0]
+    segment_lengths = []
+    for a, b in zip(path[:-1], path[1:]):
+        segment_lengths.append((b - a).GetLength())
+    total_length = sum(segment_lengths)
+    if total_length <= 0.0:
+        return path[0]
+    distance = (elapsed_s * speed_m_s) % total_length
+    for a, b, length in zip(path[:-1], path[1:], segment_lengths):
+        if distance <= length or length <= 0.0:
+            alpha = 0.0 if length <= 0.0 else distance / length
+            return a + (b - a) * alpha
+        distance -= length
+    return path[-1]
 
 
 def _facade_y_offset(x_m, z_m):
@@ -374,7 +467,7 @@ def _add_profile_scan_volume(stage, sensor_path: str, datasheet: dict) -> None:
     _add_custom_attr(scan_prim, "debug_note", "Hidden by default; red laser_contact_line shows the facade intersection.")
 
 
-def _add_laser_contact_line(stage, datasheet: dict, center_x_m: float, center_z_m: float) -> None:
+def _laser_contact_points(datasheet: dict, center_x_m: float, center_z_m: float) -> Vt.Vec3fArray:
     profile_width_m = _gocator_profile_width_m(datasheet, SENSOR_STANDOFF_M)
     x_min = max(-FACADE_WIDTH_M / 2.0, center_x_m - profile_width_m / 2.0)
     x_max = min(FACADE_WIDTH_M / 2.0, center_x_m + profile_width_m / 2.0)
@@ -386,46 +479,33 @@ def _add_laser_contact_line(stage, datasheet: dict, center_x_m: float, center_z_
         z = min(max(center_z_m, 0.0), FACADE_HEIGHT_M)
         y = _surface_front_y(x, z, 0.012, clearance_m=0.0015)
         points.append(Gf.Vec3f(x, y, z))
+    return Vt.Vec3fArray(points)
 
+
+def _add_laser_contact_line(stage, datasheet: dict, center_x_m: float, center_z_m: float) -> None:
     curve = UsdGeom.BasisCurves.Define(stage, f"{FACADE_PATH}/laser_contact_line")
     curve.CreateTypeAttr("linear")
+    points = _laser_contact_points(datasheet, center_x_m, center_z_m)
     curve.CreateCurveVertexCountsAttr(Vt.IntArray([len(points)]))
-    curve.CreatePointsAttr(Vt.Vec3fArray(points))
+    curve.CreatePointsAttr(points)
     curve.CreateWidthsAttr(Vt.FloatArray([0.018] * len(points)))
     curve.CreateDisplayColorAttr(Vt.Vec3fArray([Gf.Vec3f(1.0, 0.02, 0.01)]))
 
 
+def _add_scan_path_preview(stage, datasheet: dict) -> None:
+    path = _scan_path_points(datasheet)
+    curve = UsdGeom.BasisCurves.Define(stage, "/World/scanner_path_preview")
+    curve.CreateTypeAttr("linear")
+    curve.CreateCurveVertexCountsAttr(Vt.IntArray([len(path)]))
+    curve.CreatePointsAttr(Vt.Vec3fArray([Gf.Vec3f(point[0], point[1], point[2]) for point in path]))
+    curve.CreateWidthsAttr(Vt.FloatArray([0.012] * len(path)))
+    curve.CreateDisplayColorAttr(Vt.Vec3fArray([Gf.Vec3f(1.0, 0.82, 0.05)]))
+
+
 def _create_gocator_sensor(stage) -> str | None:
     config = _SENSOR_CONFIG.get("gocator2690", {})
-    metadata = {
-        "model": "Gocator 2690",
-        "generated_usd": "assets/cad/sensors/gocator2690/gocator2690_visual.usd",
-        "datasheet_values": {
-            "x_fov_near_mm": 385,
-            "x_fov_far_mm": 2000,
-            "clearance_distance_mm": 325,
-            "z_measurement_range_mm": 1550,
-            "nominal_standoff_mm": 1000,
-            "points_per_profile": 3700,
-            "nominal_profile_rate_hz": 40,
-        },
-        "housing_collision_envelope_m": {"x": 0.055, "y": 0.105, "z": 0.291},
-        **_GOCATOR2690_METADATA,
-    }
-    datasheet = {**metadata.get("datasheet_values", {})}
-    for attr_name in (
-        "x_fov_near_mm",
-        "x_fov_far_mm",
-        "z_measurement_range_mm",
-        "clearance_distance_mm",
-        "nominal_standoff_mm",
-        "points_per_profile",
-        "nominal_profile_rate_hz",
-        "wavelength_nm",
-        "ip_rating",
-    ):
-        if attr_name in config:
-            datasheet[attr_name] = config[attr_name]
+    metadata = _gocator2690_metadata_defaults()
+    datasheet = _active_gocator2690_datasheet()
 
     asset_path = _project_path(config.get("usd_asset_path"), PROJECT_ROOT / metadata["generated_usd"])
     mount_path = f"{ROBOT_ROOT_PATH}/scanner_mount_link"
@@ -511,11 +591,13 @@ def build_scene():
 
     _create_defect_facade(stage)
     _create_gocator_sensor(stage)
+    _add_scan_path_preview(stage, _active_gocator2690_datasheet())
     return stage
 
 
 def main() -> int:
     stage = build_scene()
+    datasheet = _active_gocator2690_datasheet()
 
     out = (ARGS.output or PROJECT_ROOT / "outputs/isaac/sensor_integration_scene.usda").resolve()
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -530,8 +612,15 @@ def main() -> int:
     if ARGS.test and frame_limit <= 0:
         frame_limit = 10
 
+    robot_translate_attr = stage.GetPrimAtPath(ROBOT_ROOT_PATH).GetAttribute("xformOp:translate")
+    laser_points_attr = stage.GetPrimAtPath(f"{FACADE_PATH}/laser_contact_line").GetAttribute("points")
+    sim_dt = 1.0 / 60.0
     frame_count = 0
     while simulation_app.is_running():
+        elapsed_s = frame_count * sim_dt
+        scanner_pose = _scan_pose_at_time(datasheet, elapsed_s, ARGS.scan_speed)
+        robot_translate_attr.Set(scanner_pose)
+        laser_points_attr.Set(_laser_contact_points(datasheet, scanner_pose[0], scanner_pose[2]))
         simulation_app.update()
         frame_count += 1
         if frame_limit > 0 and frame_count >= frame_limit:
