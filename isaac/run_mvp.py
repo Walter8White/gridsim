@@ -140,6 +140,15 @@ def _add_xyz_rotation_ops(xform: UsdGeom.Xform, rotation_deg: tuple[float, float
     xform.AddRotateZOp().Set(float(rz))
 
 
+def _gocator_profile_width_m(datasheet: dict, distance_m: float = SENSOR_STANDOFF_M) -> float:
+    clearance_m = float(datasheet.get("clearance_distance_mm", 325)) * 0.001
+    range_m = float(datasheet.get("z_measurement_range_mm", 1550)) * 0.001
+    near_fov_m = float(datasheet.get("x_fov_near_mm", 385)) * 0.001
+    far_fov_m = float(datasheet.get("x_fov_far_mm", 2000)) * 0.001
+    alpha = (distance_m - clearance_m) / range_m
+    return near_fov_m + alpha * (far_fov_m - near_fov_m)
+
+
 def _facade_y_offset(x_m, z_m):
     # Sensor sits at negative Y and looks toward +Y, so visible protrusions
     # toward the sensor are negative Y. Craters/recesses are positive Y.
@@ -354,7 +363,6 @@ def _add_profile_scan_volume(stage, sensor_path: str, datasheet: dict) -> None:
     mr_m = float(datasheet.get("z_measurement_range_mm", 1550)) * 0.001
     near_fov_m = float(datasheet.get("x_fov_near_mm", 385)) * 0.001
     far_fov_m = float(datasheet.get("x_fov_far_mm", 2000)) * 0.001
-    end_m = cd_m + mr_m
 
     scan = UsdGeom.Xform.Define(stage, f"{sensor_path}/scan_volume")
     scan_prim = scan.GetPrim()
@@ -362,24 +370,29 @@ def _add_profile_scan_volume(stage, sensor_path: str, datasheet: dict) -> None:
     _add_custom_attr(scan_prim, "measurement_range_mm", int(round(mr_m * 1000.0)))
     _add_custom_attr(scan_prim, "x_fov_near_mm", int(round(near_fov_m * 1000.0)))
     _add_custom_attr(scan_prim, "x_fov_far_mm", int(round(far_fov_m * 1000.0)))
+    _add_custom_attr(scan_prim, "visible_volume", False)
+    _add_custom_attr(scan_prim, "debug_note", "Hidden by default; red laser_contact_line shows the facade intersection.")
 
-    plane = UsdGeom.Mesh.Define(stage, f"{sensor_path}/scan_volume/profile_fov")
-    plane.CreatePointsAttr(Vt.Vec3fArray([
-        Gf.Vec3f(-near_fov_m / 2.0, 0.0, cd_m),
-        Gf.Vec3f(near_fov_m / 2.0, 0.0, cd_m),
-        Gf.Vec3f(far_fov_m / 2.0, 0.0, end_m),
-        Gf.Vec3f(-far_fov_m / 2.0, 0.0, end_m),
-    ]))
-    plane.CreateFaceVertexCountsAttr(Vt.IntArray([4]))
-    plane.CreateFaceVertexIndicesAttr(Vt.IntArray([0, 1, 2, 3]))
-    plane.CreateSubdivisionSchemeAttr("none")
-    plane.CreateDoubleSidedAttr(True)
-    plane.CreateDisplayColorAttr(Vt.Vec3fArray([Gf.Vec3f(0.1, 0.45, 1.0)]))
-    plane.CreateDisplayOpacityAttr(Vt.FloatArray([0.28]))
 
-    edge_color = (0.05, 0.35, 1.0)
-    _create_box(stage, f"{sensor_path}/scan_volume/near_profile_width", (near_fov_m, 0.006, 0.006), (0.0, 0.0, cd_m), edge_color)
-    _create_box(stage, f"{sensor_path}/scan_volume/far_profile_width", (far_fov_m, 0.006, 0.006), (0.0, 0.0, end_m), edge_color)
+def _add_laser_contact_line(stage, datasheet: dict, center_x_m: float, center_z_m: float) -> None:
+    profile_width_m = _gocator_profile_width_m(datasheet, SENSOR_STANDOFF_M)
+    x_min = max(-FACADE_WIDTH_M / 2.0, center_x_m - profile_width_m / 2.0)
+    x_max = min(FACADE_WIDTH_M / 2.0, center_x_m + profile_width_m / 2.0)
+    sample_count = 160
+    points = []
+    for index in range(sample_count):
+        alpha = index / (sample_count - 1)
+        x = x_min + (x_max - x_min) * alpha
+        z = min(max(center_z_m, 0.0), FACADE_HEIGHT_M)
+        y = _surface_front_y(x, z, 0.012, clearance_m=0.0015)
+        points.append(Gf.Vec3f(x, y, z))
+
+    curve = UsdGeom.BasisCurves.Define(stage, f"{FACADE_PATH}/laser_contact_line")
+    curve.CreateTypeAttr("linear")
+    curve.CreateCurveVertexCountsAttr(Vt.IntArray([len(points)]))
+    curve.CreatePointsAttr(Vt.Vec3fArray(points))
+    curve.CreateWidthsAttr(Vt.FloatArray([0.018] * len(points)))
+    curve.CreateDisplayColorAttr(Vt.Vec3fArray([Gf.Vec3f(1.0, 0.02, 0.01)]))
 
 
 def _create_gocator_sensor(stage) -> str | None:
@@ -417,9 +430,12 @@ def _create_gocator_sensor(stage) -> str | None:
     asset_path = _project_path(config.get("usd_asset_path"), PROJECT_ROOT / metadata["generated_usd"])
     mount_path = f"{ROBOT_ROOT_PATH}/scanner_mount_link"
     sensor_path = f"{mount_path}/{SENSOR_NAME}"
+    profile_width_m = _gocator_profile_width_m(datasheet, SENSOR_STANDOFF_M)
+    start_x_m = -FACADE_WIDTH_M / 2.0 + profile_width_m / 2.0
+    start_z_m = 0.0
 
     robot = UsdGeom.Xform.Define(stage, ROBOT_ROOT_PATH)
-    robot.AddTranslateOp().Set(Gf.Vec3d(0.0, -SENSOR_STANDOFF_M, SENSOR_HEIGHT_M))
+    robot.AddTranslateOp().Set(Gf.Vec3d(start_x_m, -SENSOR_STANDOFF_M, start_z_m))
     mount = UsdGeom.Xform.Define(stage, mount_path)
     mount.AddTranslateOp().Set(Gf.Vec3d(0.0, 0.0, 0.0))
 
@@ -463,8 +479,13 @@ def _create_gocator_sensor(stage) -> str | None:
     scanner_frame.AddTranslateOp().Set(Gf.Vec3d(0.0, 0.0, 0.0))
     _add_scanner_frame_axes(stage, f"{sensor_path}/scanner_frame")
     _add_profile_scan_volume(stage, sensor_path, datasheet)
+    _add_laser_contact_line(stage, datasheet, start_x_m, start_z_m)
 
-    print(f"[gocator2690] mounted sensor-only scene at {sensor_path}", flush=True)
+    print(
+        f"[gocator2690] mounted at bottom-left scan start x={start_x_m:.3f} m, z={start_z_m:.3f} m; "
+        f"profile_width_at_1m={profile_width_m:.3f} m",
+        flush=True,
+    )
     return f"{sensor_path}/scanner_frame"
 
 
