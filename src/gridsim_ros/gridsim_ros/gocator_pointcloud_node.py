@@ -10,6 +10,7 @@ import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import PointCloud2, PointField
 from std_msgs.msg import Header
+import yaml
 
 
 def _add_project_src_to_path() -> None:
@@ -34,7 +35,26 @@ from gridsim_sensors import (  # noqa: E402
 
 FACADE_WIDTH_M = 10.0
 FACADE_HEIGHT_M = 10.0
-SENSOR_STANDOFF_M = 1.0
+
+
+def _find_project_root() -> Path:
+    for parent in (Path.cwd(), *Path(__file__).resolve().parents):
+        if (parent / "configs" / "sensors.yaml").exists() and (parent / "src").exists():
+            return parent
+    return Path.cwd()
+
+
+PROJECT_ROOT = _find_project_root()
+
+
+def _load_gocator_config() -> dict:
+    path = PROJECT_ROOT / "configs" / "sensors.yaml"
+    if not path.exists():
+        return {}
+    with path.open("r", encoding="utf-8") as fp:
+        data = yaml.safe_load(fp) or {}
+    config = data.get("gocator2690", {})
+    return config if isinstance(config, dict) else {}
 
 
 def _synthetic_facade_y(x_m: np.ndarray, z_m: np.ndarray) -> np.ndarray:
@@ -69,9 +89,9 @@ def _synthetic_facade_y(x_m: np.ndarray, z_m: np.ndarray) -> np.ndarray:
     return bow + waves + defects + joints
 
 
-def _scanner_pose(x_m: float, z_m: float) -> ScannerFramePose:
+def _scanner_pose(x_m: float, z_m: float, standoff_m: float) -> ScannerFramePose:
     return ScannerFramePose.from_arrays(
-        [x_m, -SENSOR_STANDOFF_M, z_m],
+        [x_m, -standoff_m, z_m],
         [1.0, 0.0, 0.0],
         [0.0, 0.0, 1.0],
         [0.0, 1.0, 0.0],
@@ -124,27 +144,50 @@ class GocatorPointCloudNode(Node):
 
     def __init__(self) -> None:
         super().__init__("gocator_pointcloud_node")
+        config = _load_gocator_config()
+        default_spec = Gocator2690Spec()
+
         self.declare_parameter("frame_id", "world")
-        self.declare_parameter("points_per_profile", 800)
-        self.declare_parameter("profile_spacing_m", 0.01)
-        self.declare_parameter("scan_speed_m_s", 0.25)
+        self.declare_parameter("points_per_profile", int(config.get("points_per_profile", default_spec.points_per_profile)))
+        self.declare_parameter(
+            "profile_spacing_m",
+            float(config.get("profile_spacing_m", default_spec.profile_spacing_m)),
+        )
+        self.declare_parameter(
+            "nominal_profile_rate_hz",
+            float(config.get("nominal_profile_rate_hz", default_spec.nominal_profile_rate_hz)),
+        )
+        self.declare_parameter(
+            "nominal_standoff_m",
+            float(config.get("nominal_standoff_mm", default_spec.nominal_standoff_m * 1000.0)) * 0.001,
+        )
+        self.declare_parameter("scan_speed_m_s", 0.0)
         self.declare_parameter("publish_rate_hz", 10.0)
-        self.declare_parameter("max_points", 250000)
+        self.declare_parameter("max_points", 500000)
         self.declare_parameter("loop_scan", True)
 
         self.frame_id = str(self.get_parameter("frame_id").value)
-        self.scan_speed_m_s = float(self.get_parameter("scan_speed_m_s").value)
         self.max_points = int(self.get_parameter("max_points").value)
         self.loop_scan = bool(self.get_parameter("loop_scan").value)
         publish_rate_hz = float(self.get_parameter("publish_rate_hz").value)
+        nominal_profile_rate_hz = float(self.get_parameter("nominal_profile_rate_hz").value)
+        profile_spacing_m = float(self.get_parameter("profile_spacing_m").value)
+        requested_scan_speed_m_s = float(self.get_parameter("scan_speed_m_s").value)
+        self.nominal_standoff_m = float(self.get_parameter("nominal_standoff_m").value)
+        self.scan_speed_m_s = (
+            requested_scan_speed_m_s
+            if requested_scan_speed_m_s > 0.0
+            else nominal_profile_rate_hz * profile_spacing_m
+        )
 
         spec = Gocator2690Spec(
             points_per_profile=int(self.get_parameter("points_per_profile").value),
-            profile_spacing_m=float(self.get_parameter("profile_spacing_m").value),
-            nominal_standoff_m=SENSOR_STANDOFF_M,
+            profile_spacing_m=profile_spacing_m,
+            nominal_standoff_m=self.nominal_standoff_m,
+            nominal_profile_rate_hz=nominal_profile_rate_hz,
         )
         self.profiler = Gocator2690LineProfiler(spec)
-        self.scan_width_m = float(spec.width_at_distance(SENSOR_STANDOFF_M))
+        self.scan_width_m = float(spec.width_at_distance(spec.nominal_standoff_m))
         self.centers = _pass_centers(self.scan_width_m)
         self.acquisition = GocatorEncoderTriggeredAcquisition(self.profiler, self._sample_profile)
         self.accumulator = GocatorPointCloudAccumulator(spec.profile_spacing_m)
@@ -154,9 +197,12 @@ class GocatorPointCloudNode(Node):
         self.direction = 1.0
         self.last_time_s = None
         self.publisher = self.create_publisher(PointCloud2, "gocator/points", 2)
-        self.timer = self.create_timer(1.0 / publish_rate_hz, self._tick)
+        self.acquisition_timer = self.create_timer(1.0 / nominal_profile_rate_hz, self._acquire_tick)
+        self.publish_timer = self.create_timer(1.0 / publish_rate_hz, self._publish_tick)
         self.get_logger().info(
-            f"Publishing /gocator/points in frame '{self.frame_id}' with {self.scan_width_m:.3f} m scan width"
+            f"Gocator specs: {spec.points_per_profile} pts/profile, "
+            f"{nominal_profile_rate_hz:.1f} profiles/s, spacing={spec.profile_spacing_m:.6f} m, "
+            f"scan_speed={self.scan_speed_m_s:.4f} m/s, width_at_standoff={self.scan_width_m:.3f} m"
         )
 
     def _sample_profile(self, pose: ScannerFramePose, timestamp_s: float, profile_index: int, encoder_position_m: float):
@@ -179,7 +225,7 @@ class GocatorPointCloudNode(Node):
         elif self.direction < 0.0 and self.z_m <= 0.0:
             self.z_m = 0.0
             self._next_pass()
-        return _scanner_pose(self.centers[self.pass_index], self.z_m)
+        return _scanner_pose(self.centers[self.pass_index], self.z_m, self.nominal_standoff_m)
 
     def _next_pass(self) -> None:
         if self.pass_index + 1 >= len(self.centers):
@@ -194,12 +240,12 @@ class GocatorPointCloudNode(Node):
         self.pass_index += 1
         self.direction *= -1.0
 
-    def _tick(self) -> None:
+    def _acquire_tick(self) -> None:
         now = self.get_clock().now()
         now_s = now.nanoseconds * 1e-9
         if self.last_time_s is None:
             self.last_time_s = now_s
-            pose = _scanner_pose(self.centers[self.pass_index], self.z_m)
+            pose = _scanner_pose(self.centers[self.pass_index], self.z_m, self.nominal_standoff_m)
         else:
             dt_s = max(0.0, now_s - self.last_time_s)
             self.last_time_s = now_s
@@ -208,6 +254,8 @@ class GocatorPointCloudNode(Node):
         for profile in self.acquisition.update(pose, now_s):
             self.accumulator.add_profile(profile)
 
+    def _publish_tick(self) -> None:
+        now = self.get_clock().now()
         cloud = self.accumulator.point_cloud()
         if self.max_points > 0 and len(cloud) > self.max_points:
             stride = int(np.ceil(len(cloud) / self.max_points))

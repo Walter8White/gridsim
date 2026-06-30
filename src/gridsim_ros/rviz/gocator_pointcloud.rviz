@@ -30,7 +30,7 @@ Visualization Manager:
         Max Value: 10
         Min Value: -10
         Value: true
-      Axis: Z
+      Axis: Y
       Channel Name: z
       Class: rviz_default_plugins/PointCloud2
       Color: 255; 255; 255

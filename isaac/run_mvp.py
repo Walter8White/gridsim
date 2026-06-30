@@ -24,7 +24,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--realtime", action="store_true")
     parser.add_argument("--frames", type=int, default=0)
     parser.add_argument("--output", type=Path)
-    parser.add_argument("--scan-speed", type=float, default=0.6, help="Live scanner path speed in m/s.")
+    parser.add_argument("--scan-speed", type=float, default=0.0, help="Live scanner path speed in m/s. <=0 uses Gocator profile_rate * profile_spacing.")
     # Kept as no-op compatibility flags for older scripts/commands.
     parser.add_argument("--motor-rotate-x", type=float, default=90.0, help=argparse.SUPPRESS)
     parser.add_argument("--motor-rotate-y", type=float, default=90.0, help=argparse.SUPPRESS)
@@ -62,8 +62,6 @@ GOCATOR2690_METADATA_PATH = PROJECT_ROOT / "assets/cad/sensors/gocator2690/gocat
 
 FACADE_WIDTH_M = 10.0
 FACADE_HEIGHT_M = 10.0
-SENSOR_STANDOFF_M = 1.0
-SENSOR_HEIGHT_M = 1.0
 
 
 def _load_sensor_config() -> dict:
@@ -98,6 +96,7 @@ def _gocator2690_metadata_defaults() -> dict:
             "nominal_standoff_mm": 1000,
             "points_per_profile": 3700,
             "nominal_profile_rate_hz": 40,
+            "profile_spacing_m": 0.0005,
         },
         "housing_collision_envelope_m": {"x": 0.055, "y": 0.105, "z": 0.291},
         **_GOCATOR2690_METADATA,
@@ -114,6 +113,7 @@ def _gocator2690_datasheet(config: dict, metadata: dict) -> dict:
         "nominal_standoff_mm",
         "points_per_profile",
         "nominal_profile_rate_hz",
+        "profile_spacing_m",
         "wavelength_nm",
         "ip_rating",
     ):
@@ -181,7 +181,18 @@ def _add_xyz_rotation_ops(xform: UsdGeom.Xform, rotation_deg: tuple[float, float
     xform.AddRotateZOp().Set(float(rz))
 
 
-def _gocator_profile_width_m(datasheet: dict, distance_m: float = SENSOR_STANDOFF_M) -> float:
+def _gocator_standoff_m(datasheet: dict) -> float:
+    return float(datasheet.get("nominal_standoff_mm", 1000)) * 0.001
+
+
+def _gocator_scan_speed_m_s(datasheet: dict) -> float:
+    profile_rate_hz = float(datasheet.get("nominal_profile_rate_hz", 40))
+    profile_spacing_m = float(datasheet.get("profile_spacing_m", 0.0005))
+    return profile_rate_hz * profile_spacing_m
+
+
+def _gocator_profile_width_m(datasheet: dict, distance_m: float | None = None) -> float:
+    distance_m = _gocator_standoff_m(datasheet) if distance_m is None else distance_m
     clearance_m = float(datasheet.get("clearance_distance_mm", 325)) * 0.001
     range_m = float(datasheet.get("z_measurement_range_mm", 1550)) * 0.001
     near_fov_m = float(datasheet.get("x_fov_near_mm", 385)) * 0.001
@@ -191,7 +202,7 @@ def _gocator_profile_width_m(datasheet: dict, distance_m: float = SENSOR_STANDOF
 
 
 def _scan_pass_centers(datasheet: dict) -> list[float]:
-    profile_width_m = _gocator_profile_width_m(datasheet, SENSOR_STANDOFF_M)
+    profile_width_m = _gocator_profile_width_m(datasheet)
     first = -FACADE_WIDTH_M / 2.0 + profile_width_m / 2.0
     last = FACADE_WIDTH_M / 2.0 - profile_width_m / 2.0
     centers = []
@@ -208,23 +219,26 @@ def _scan_path_points(datasheet: dict) -> list[Gf.Vec3d]:
     points: list[Gf.Vec3d] = []
     top_z = FACADE_HEIGHT_M + 0.001
     centers = _scan_pass_centers(datasheet)
+    standoff_m = _gocator_standoff_m(datasheet)
     for index, x_m in enumerate(centers):
         z_start = 0.0 if index % 2 == 0 else top_z
         z_end = top_z if index % 2 == 0 else 0.0
-        start = Gf.Vec3d(x_m, -SENSOR_STANDOFF_M, z_start)
-        end = Gf.Vec3d(x_m, -SENSOR_STANDOFF_M, z_end)
+        start = Gf.Vec3d(x_m, -standoff_m, z_start)
+        end = Gf.Vec3d(x_m, -standoff_m, z_end)
         if not points:
             points.append(start)
         elif points[-1] != start:
             points.append(start)
         points.append(end)
         if index + 1 < len(centers):
-            points.append(Gf.Vec3d(centers[index + 1], -SENSOR_STANDOFF_M, z_end))
+            points.append(Gf.Vec3d(centers[index + 1], -standoff_m, z_end))
     return points
 
 
 def _scan_pose_at_time(datasheet: dict, elapsed_s: float, speed_m_s: float) -> Gf.Vec3d:
     path = _scan_path_points(datasheet)
+    if speed_m_s <= 0.0:
+        speed_m_s = _gocator_scan_speed_m_s(datasheet)
     if len(path) < 2 or speed_m_s <= 0.0:
         return path[0]
     segment_lengths = []
@@ -468,7 +482,7 @@ def _add_profile_scan_volume(stage, sensor_path: str, datasheet: dict) -> None:
 
 
 def _laser_contact_points(datasheet: dict, center_x_m: float, center_z_m: float) -> Vt.Vec3fArray:
-    profile_width_m = _gocator_profile_width_m(datasheet, SENSOR_STANDOFF_M)
+    profile_width_m = _gocator_profile_width_m(datasheet)
     x_min = max(-FACADE_WIDTH_M / 2.0, center_x_m - profile_width_m / 2.0)
     x_max = min(FACADE_WIDTH_M / 2.0, center_x_m + profile_width_m / 2.0)
     sample_count = 160
@@ -510,12 +524,13 @@ def _create_gocator_sensor(stage) -> str | None:
     asset_path = _project_path(config.get("usd_asset_path"), PROJECT_ROOT / metadata["generated_usd"])
     mount_path = f"{ROBOT_ROOT_PATH}/scanner_mount_link"
     sensor_path = f"{mount_path}/{SENSOR_NAME}"
-    profile_width_m = _gocator_profile_width_m(datasheet, SENSOR_STANDOFF_M)
+    standoff_m = _gocator_standoff_m(datasheet)
+    profile_width_m = _gocator_profile_width_m(datasheet, standoff_m)
     start_x_m = -FACADE_WIDTH_M / 2.0 + profile_width_m / 2.0
     start_z_m = 0.0
 
     robot = UsdGeom.Xform.Define(stage, ROBOT_ROOT_PATH)
-    robot.AddTranslateOp().Set(Gf.Vec3d(start_x_m, -SENSOR_STANDOFF_M, start_z_m))
+    robot.AddTranslateOp().Set(Gf.Vec3d(start_x_m, -standoff_m, start_z_m))
     mount = UsdGeom.Xform.Define(stage, mount_path)
     mount.AddTranslateOp().Set(Gf.Vec3d(0.0, 0.0, 0.0))
 
@@ -563,7 +578,7 @@ def _create_gocator_sensor(stage) -> str | None:
 
     print(
         f"[gocator2690] mounted at bottom-left scan start x={start_x_m:.3f} m, z={start_z_m:.3f} m; "
-        f"profile_width_at_1m={profile_width_m:.3f} m",
+        f"profile_width_at_standoff={profile_width_m:.3f} m, scan_speed={_gocator_scan_speed_m_s(datasheet):.4f} m/s",
         flush=True,
     )
     return f"{sensor_path}/scanner_frame"

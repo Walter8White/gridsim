@@ -23,11 +23,12 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument("workspace", default_value=str(Path.cwd())),
             DeclareLaunchArgument("isaac", default_value="true"),
             DeclareLaunchArgument("rviz", default_value="true"),
-            DeclareLaunchArgument("points_per_profile", default_value="800"),
-            DeclareLaunchArgument("profile_spacing_m", default_value="0.01"),
-            DeclareLaunchArgument("scan_speed_m_s", default_value="0.25"),
+            DeclareLaunchArgument("points_per_profile", default_value="3700"),
+            DeclareLaunchArgument("profile_spacing_m", default_value="0.0005"),
+            DeclareLaunchArgument("nominal_profile_rate_hz", default_value="40.0"),
+            DeclareLaunchArgument("scan_speed_m_s", default_value="0.0"),
             DeclareLaunchArgument("publish_rate_hz", default_value="10.0"),
-            DeclareLaunchArgument("max_points", default_value="250000"),
+            DeclareLaunchArgument("max_points", default_value="500000"),
             ExecuteProcess(
                 cmd=[
                     PathJoinSubstitution([workspace, "isaac", "run_mvp.sh"]),
@@ -50,6 +51,9 @@ def generate_launch_description() -> LaunchDescription:
                         ),
                         "profile_spacing_m": ParameterValue(
                             LaunchConfiguration("profile_spacing_m"), value_type=float
+                        ),
+                        "nominal_profile_rate_hz": ParameterValue(
+                            LaunchConfiguration("nominal_profile_rate_hz"), value_type=float
                         ),
                         "scan_speed_m_s": ParameterValue(scan_speed, value_type=float),
                         "publish_rate_hz": ParameterValue(
