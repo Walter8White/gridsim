@@ -62,7 +62,6 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 from gridsim_sensors import (  # noqa: E402
     Gocator2690LineProfiler,
     Gocator2690Spec,
-    GocatorEncoderTriggeredAcquisition,
     GocatorPointCloudAccumulator,
     GocatorProfile,
     ScannerFramePose,
@@ -573,26 +572,32 @@ class IsaacGocatorRosBridge:
             nominal_standoff_m=_gocator_standoff_m(datasheet),
             nominal_profile_rate_hz=float(datasheet.get("nominal_profile_rate_hz", 40.0)),
         )
+        self.datasheet = datasheet
+        self.scan_speed_m_s = ARGS.scan_speed if ARGS.scan_speed > 0.0 else _gocator_scan_speed_m_s(datasheet)
+        self.profile_period_s = 1.0 / max(spec.nominal_profile_rate_hz, 1e-6)
+        self.next_profile_time_s = 0.0
+        self.profile_index = 0
         self.profiler = Gocator2690LineProfiler(spec)
-        self.acquisition = GocatorEncoderTriggeredAcquisition(self.profiler, self._sample_profile)
         self.accumulator = GocatorPointCloudAccumulator(spec.profile_spacing_m)
         self.node.get_logger().info(
             f"Isaac ROS bridge publishing /gocator/profile_points and /gocator/points "
             f"({spec.points_per_profile} pts/profile, {spec.nominal_profile_rate_hz:.1f} Hz, "
-            f"spacing={spec.profile_spacing_m:.6f} m)"
+            f"spacing={spec.profile_spacing_m:.6f} m, scan_speed={self.scan_speed_m_s:.4f} m/s)"
         )
 
-    def update(self, scanner_pose: Gf.Vec3d, timestamp_s: float) -> None:
-        pose = ScannerFramePose.from_arrays(
-            [scanner_pose[0], scanner_pose[1], scanner_pose[2]],
-            [1.0, 0.0, 0.0],
-            [0.0, 0.0, 1.0],
-            [0.0, 1.0, 0.0],
-        )
+    def update(self, timestamp_s: float) -> None:
         stamp = self.node.get_clock().now().to_msg()
-        for profile in self.acquisition.update(pose, timestamp_s):
+        while self.next_profile_time_s <= timestamp_s + 1e-12:
+            scanner_pose = _scan_pose_at_time(
+                self.datasheet,
+                self.next_profile_time_s,
+                self.scan_speed_m_s,
+            )
+            profile = self._sample_profile_at_pose(scanner_pose, self.next_profile_time_s)
             self.accumulator.add_profile(profile)
             self.profile_pub.publish(self._pointcloud2(profile.valid_points_m, stamp))
+            self.profile_index += 1
+            self.next_profile_time_s += self.profile_period_s
 
         if self.last_publish_s < 0.0 or timestamp_s - self.last_publish_s >= self.publish_period_s:
             self.last_publish_s = timestamp_s
@@ -600,23 +605,24 @@ class IsaacGocatorRosBridge:
         self.rclpy.spin_once(self.node, timeout_sec=0.0)
 
     def shutdown(self) -> None:
+        self.node.get_logger().info(f"Isaac ROS bridge published {self.profile_index} Gocator profiles")
         self.node.destroy_node()
         if self.rclpy.ok():
             self.rclpy.shutdown()
 
-    def _sample_profile(
-        self,
-        pose: ScannerFramePose,
-        timestamp_s: float,
-        profile_index: int,
-        encoder_position_m: float,
-    ):
+    def _sample_profile_at_pose(self, scanner_pose: Gf.Vec3d, timestamp_s: float):
+        pose = ScannerFramePose.from_arrays(
+            [scanner_pose[0], scanner_pose[1], scanner_pose[2]],
+            [1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.0, 1.0, 0.0],
+        )
         profile = self.profiler.sample_surface(
             pose,
             _facade_y_offset_array,
             timestamp_s=timestamp_s,
-            profile_index=profile_index,
-            encoder_position_m=encoder_position_m,
+            profile_index=self.profile_index,
+            encoder_position_m=timestamp_s * self.scan_speed_m_s,
         )
         profile.valid_mask &= _wall_valid_mask(profile.points_world)
         return profile
@@ -794,7 +800,7 @@ def main() -> int:
             robot_translate_attr.Set(scanner_pose)
             laser_points_attr.Set(_laser_contact_points(datasheet, scanner_pose[0], scanner_pose[2]))
             if ros_bridge is not None:
-                ros_bridge.update(scanner_pose, elapsed_s)
+                ros_bridge.update(elapsed_s)
             simulation_app.update()
             frame_count += 1
             if frame_limit > 0 and frame_count >= frame_limit:
