@@ -33,8 +33,8 @@ Visualization Manager:
       Axis: Y
       Channel Name: z
       Class: rviz_default_plugins/PointCloud2
-      Color: 255; 255; 255
-      Color Transformer: AxisColor
+      Color: 210; 210; 210
+      Color Transformer: FlatColor
       Decay Time: 0
       Enabled: true
       Invert Rainbow: false
@@ -55,7 +55,7 @@ Visualization Manager:
         Reliability Policy: Reliable
         Value: /gocator/points
       Use Fixed Frame: true
-      Use rainbow: true
+      Use rainbow: false
       Value: true
     - Alpha: 1
       Autocompute Intensity Bounds: true
@@ -88,7 +88,7 @@ Visualization Manager:
         Reliability Policy: Reliable
         Value: /gocator/profile_points
       Use Fixed Frame: true
-      Use rainbow: true
+      Use rainbow: false
       Value: true
   Enabled: true
   Global Options:

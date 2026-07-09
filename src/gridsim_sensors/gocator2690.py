@@ -23,7 +23,7 @@ class Gocator2690Spec:
     fov_near_m: float = 0.385
     fov_far_m: float = 2.000
     nominal_standoff_m: float = 1.000
-    nominal_profile_rate_hz: float = 40.0
+    nominal_profile_rate_hz: float = 2000.0
     profile_spacing_m: float = 0.0005
 
     @property

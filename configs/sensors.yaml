@@ -64,7 +64,7 @@ gocator2690:
   clearance_distance_mm: 325
   nominal_standoff_mm: 1100
   points_per_profile: 3700
-  nominal_profile_rate_hz: 40
+  nominal_profile_rate_hz: 2000
   profile_spacing_m: 0.0005
 
 grid_imu:

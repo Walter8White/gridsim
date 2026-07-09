@@ -25,7 +25,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ros-frame-id", default="world")
     parser.add_argument("--ros-publish-rate", type=float, default=10.0)
     parser.add_argument("--ros-max-points", type=int, default=500000)
+    parser.add_argument("--ros-profile-stride", type=int, default=1, help="Add one profile to the RViz display accumulator every N generated profiles.")
+    parser.add_argument("--ros-profile-point-stride", type=int, default=1, help="Publish one point every N points when sending the current profile to RViz.")
+    parser.add_argument("--record-full-res", action="store_true", help="Export full-resolution Gocator profiles on shutdown.")
+    parser.add_argument("--record-csv", action="store_true", help="Also export full-resolution profiles as CSV. This can be large.")
+    parser.add_argument("--record-output-dir", type=Path, default=Path("outputs/gocator_scan"))
+    parser.add_argument("--stop-after-scan", action="store_true", help="Exit once one complete facade scan path has been traversed.")
     parser.add_argument("--realtime", action="store_true")
+    parser.add_argument("--sim-dt", type=float, default=1.0 / 60.0, help="Isaac simulation step in seconds. Larger values are useful for headless acquisition.")
     parser.add_argument("--frames", type=int, default=0)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--scan-speed", type=float, default=0.0, help="Live scanner path speed in m/s. <=0 uses Gocator profile_rate * profile_spacing.")
@@ -62,9 +69,10 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 from gridsim_sensors import (  # noqa: E402
     Gocator2690LineProfiler,
     Gocator2690Spec,
-    GocatorPointCloudAccumulator,
     GocatorProfile,
     ScannerFramePose,
+    export_height_map_npy,
+    export_point_cloud_ply,
 )
 
 WORLD_PATH = "/World"
@@ -74,8 +82,8 @@ ROBOT_ROOT_PATH = "/World/Robot"
 SENSOR_NAME = "Gocator2690"
 GOCATOR2690_METADATA_PATH = PROJECT_ROOT / "assets/cad/sensors/gocator2690/gocator2690.json"
 
-FACADE_WIDTH_M = 10.0
-FACADE_HEIGHT_M = 10.0
+FACADE_WIDTH_M = 3.0
+FACADE_HEIGHT_M = 3.0
 
 
 def _load_sensor_config() -> dict:
@@ -109,7 +117,7 @@ def _gocator2690_metadata_defaults() -> dict:
             "z_measurement_range_mm": 1550,
             "nominal_standoff_mm": 1000,
             "points_per_profile": 3700,
-            "nominal_profile_rate_hz": 40,
+            "nominal_profile_rate_hz": 2000,
             "profile_spacing_m": 0.0005,
         },
         "housing_collision_envelope_m": {"x": 0.055, "y": 0.105, "z": 0.291},
@@ -200,7 +208,7 @@ def _gocator_standoff_m(datasheet: dict) -> float:
 
 
 def _gocator_scan_speed_m_s(datasheet: dict) -> float:
-    profile_rate_hz = float(datasheet.get("nominal_profile_rate_hz", 40))
+    profile_rate_hz = float(datasheet.get("nominal_profile_rate_hz", 2000))
     profile_spacing_m = float(datasheet.get("profile_spacing_m", 0.0005))
     return profile_rate_hz * profile_spacing_m
 
@@ -249,6 +257,11 @@ def _scan_path_points(datasheet: dict) -> list[Gf.Vec3d]:
     return points
 
 
+def _scan_path_length_m(datasheet: dict) -> float:
+    path = _scan_path_points(datasheet)
+    return float(sum((b - a).GetLength() for a, b in zip(path[:-1], path[1:])))
+
+
 def _scan_pose_at_time(datasheet: dict, elapsed_s: float, speed_m_s: float) -> Gf.Vec3d:
     path = _scan_path_points(datasheet)
     if speed_m_s <= 0.0:
@@ -273,71 +286,256 @@ def _scan_pose_at_time(datasheet: dict, elapsed_s: float, speed_m_s: float) -> G
 def _facade_y_offset(x_m, z_m):
     # Sensor sits at negative Y and looks toward +Y, so visible protrusions
     # toward the sensor are negative Y. Craters/recesses are positive Y.
-    bow = -0.045 * (1.0 - (x_m / 5.0) ** 2) * (1.0 - ((z_m - 5.0) / 5.0) ** 2)
+    half_width = FACADE_WIDTH_M * 0.5
+    half_height = FACADE_HEIGHT_M * 0.5
+    z_center = FACADE_HEIGHT_M * 0.5
+    x_norm = x_m / max(half_width, 1e-6)
+    z_norm = (z_m - z_center) / max(half_height, 1e-6)
+    bow = -0.020 * (1.0 - x_norm**2) * (1.0 - z_norm**2)
     waves = (
-        -0.006 * math.sin(1.5 * x_m + 0.4) * math.sin(1.2 * z_m)
-        -0.0025 * math.sin(8.5 * x_m + 1.7) * math.sin(7.0 * z_m)
+        -0.004 * math.sin(3.0 * x_m + 0.4) * math.sin(2.6 * z_m)
+        -0.0020 * math.sin(12.0 * x_m + 1.7) * math.sin(10.0 * z_m)
     )
     dents = [
-        (-2.2, 2.8, 0.35, 0.42, 0.045),
-        (1.9, 6.8, 0.55, 0.36, 0.036),
-        (3.6, 3.2, 0.42, 0.46, 0.030),
-        (-3.5, 7.4, 0.45, 0.34, 0.040),
-        (0.1, 4.8, 0.22, 0.20, 0.020),
-        (-4.4, 5.9, 0.18, 0.25, 0.018),
+        (-0.72, 0.78, 0.18, 0.20, 0.030),
+        (0.65, 2.15, 0.26, 0.18, 0.025),
+        (1.05, 1.15, 0.16, 0.20, 0.018),
+        (-1.10, 2.42, 0.18, 0.16, 0.024),
+        (0.05, 1.55, 0.12, 0.10, 0.014),
     ]
     bumps = [
-        (-1.1, 5.7, 0.48, 0.38, -0.030),
-        (2.8, 1.6, 0.35, 0.36, -0.026),
-        (-4.0, 4.2, 0.30, 0.48, -0.020),
-        (0.4, 8.4, 0.55, 0.32, -0.028),
-        (4.1, 8.0, 0.26, 0.22, -0.016),
+        (-0.35, 1.85, 0.22, 0.20, -0.024),
+        (0.90, 0.52, 0.18, 0.18, -0.020),
+        (-1.22, 1.35, 0.14, 0.22, -0.016),
+        (0.20, 2.58, 0.24, 0.16, -0.020),
     ]
     fine_pits = [
-        (-0.9, 1.5, 0.055, 0.060, 0.006),
-        (-0.1, 2.9, 0.040, 0.055, 0.005),
-        (1.4, 4.2, 0.050, 0.045, 0.006),
-        (2.7, 5.4, 0.065, 0.055, 0.007),
-        (-3.9, 6.1, 0.045, 0.070, 0.006),
-        (-2.6, 8.7, 0.055, 0.055, 0.005),
-        (3.8, 7.2, 0.050, 0.050, 0.006),
-        (4.5, 3.9, 0.040, 0.045, 0.004),
+        (-0.55, 0.48, 0.045, 0.050, 0.006),
+        (-0.08, 0.92, 0.040, 0.045, 0.005),
+        (0.42, 1.35, 0.045, 0.045, 0.006),
+        (0.80, 1.78, 0.050, 0.050, 0.006),
+        (-1.18, 1.95, 0.045, 0.055, 0.005),
+        (-0.78, 2.60, 0.050, 0.050, 0.005),
+        (1.12, 2.35, 0.045, 0.045, 0.006),
     ]
     fine_bumps = [
-        (-1.8, 1.9, 0.050, 0.050, -0.004),
-        (0.7, 3.7, 0.060, 0.045, -0.005),
-        (2.2, 8.8, 0.045, 0.060, -0.004),
-        (-4.4, 2.9, 0.055, 0.040, -0.004),
+        (-0.95, 0.65, 0.045, 0.045, -0.004),
+        (0.22, 1.20, 0.055, 0.045, -0.005),
+        (0.70, 2.70, 0.045, 0.055, -0.004),
+        (-1.25, 0.95, 0.050, 0.040, -0.004),
     ]
     defects = 0.0
     for cx, cz, sx, sz, amp in dents + bumps + fine_pits + fine_bumps:
         defects += amp * math.exp(-(((x_m - cx) / sx) ** 2 + ((z_m - cz) / sz) ** 2))
     joints = 0.0
-    for joint_x, phase in ((-3.2, 0.0), (-1.1, 0.8), (1.2, 1.9), (3.4, 2.7)):
-        center = joint_x + 0.035 * math.sin(1.7 * z_m + phase) + 0.012 * math.sin(6.5 * z_m + phase)
-        width = 0.018 + 0.010 * (0.5 + 0.5 * math.sin(3.1 * z_m + phase))
+    for joint_x, phase in ((-0.95, 0.0), (0.15, 0.8), (1.05, 1.9)):
+        center = joint_x + 0.020 * math.sin(3.0 * z_m + phase) + 0.008 * math.sin(10.0 * z_m + phase)
+        width = 0.012 + 0.006 * (0.5 + 0.5 * math.sin(4.5 * z_m + phase))
         if abs(x_m - center) < width:
-            joints += 0.009
-    for joint_z, phase in ((2.2, 0.4), (5.0, 1.5), (7.8, 2.1)):
-        center = joint_z + 0.030 * math.sin(1.4 * x_m + phase) + 0.010 * math.sin(5.5 * x_m)
-        width = 0.016 + 0.008 * (0.5 + 0.5 * math.sin(2.5 * x_m + phase))
-        if abs(z_m - center) < width:
             joints += 0.006
+    for joint_z, phase in ((0.75, 0.4), (1.55, 1.5), (2.35, 2.1)):
+        center = joint_z + 0.020 * math.sin(2.8 * x_m + phase) + 0.008 * math.sin(8.0 * x_m)
+        width = 0.012 + 0.006 * (0.5 + 0.5 * math.sin(4.0 * x_m + phase))
+        if abs(z_m - center) < width:
+            joints += 0.005
     patches = 0.0
     for x0, x1, z0, z1, offset in (
-        (-4.4, -3.5, 0.9, 1.7, 0.006),
-        (-0.7, 0.1, 3.2, 4.1, 0.005),
-        (2.3, 3.5, 7.0, 8.0, 0.007),
-        (-2.8, -1.7, 8.2, 9.1, 0.005),
+        (-1.35, -0.95, 0.35, 0.75, 0.005),
+        (-0.25, 0.15, 1.00, 1.45, 0.004),
+        (0.65, 1.20, 2.10, 2.58, 0.006),
     ):
         if x0 < x_m < x1 and z0 < z_m < z1:
             patches += offset
     return bow + waves + defects + joints + patches
 
 
-def _facade_y_offset_array(x_m: np.ndarray, z_m: np.ndarray) -> np.ndarray:
-    vectorized = np.vectorize(_facade_y_offset, otypes=[np.float64])
-    return vectorized(x_m, z_m)
+def _facade_y_offset_vectorized(x_m: np.ndarray, z_m: np.ndarray) -> np.ndarray:
+    """Fully numpy-native implementation of _facade_y_offset for batch use."""
+    x = np.asarray(x_m, dtype=np.float64)
+    z = np.asarray(z_m, dtype=np.float64)
+    half_width = FACADE_WIDTH_M * 0.5
+    half_height = FACADE_HEIGHT_M * 0.5
+    z_center = FACADE_HEIGHT_M * 0.5
+    x_norm = x / max(half_width, 1e-6)
+    z_norm = (z - z_center) / max(half_height, 1e-6)
+    bow = -0.020 * (1.0 - x_norm ** 2) * (1.0 - z_norm ** 2)
+    waves = (
+        -0.004 * np.sin(3.0 * x + 0.4) * np.sin(2.6 * z)
+        - 0.0020 * np.sin(12.0 * x + 1.7) * np.sin(10.0 * z)
+    )
+    dents = [
+        (-0.72, 0.78, 0.18, 0.20, 0.030),
+        (0.65, 2.15, 0.26, 0.18, 0.025),
+        (1.05, 1.15, 0.16, 0.20, 0.018),
+        (-1.10, 2.42, 0.18, 0.16, 0.024),
+        (0.05, 1.55, 0.12, 0.10, 0.014),
+    ]
+    bumps = [
+        (-0.35, 1.85, 0.22, 0.20, -0.024),
+        (0.90, 0.52, 0.18, 0.18, -0.020),
+        (-1.22, 1.35, 0.14, 0.22, -0.016),
+        (0.20, 2.58, 0.24, 0.16, -0.020),
+    ]
+    fine_pits = [
+        (-0.55, 0.48, 0.045, 0.050, 0.006),
+        (-0.08, 0.92, 0.040, 0.045, 0.005),
+        (0.42, 1.35, 0.045, 0.045, 0.006),
+        (0.80, 1.78, 0.050, 0.050, 0.006),
+        (-1.18, 1.95, 0.045, 0.055, 0.005),
+        (-0.78, 2.60, 0.050, 0.050, 0.005),
+        (1.12, 2.35, 0.045, 0.045, 0.006),
+    ]
+    fine_bumps = [
+        (-0.95, 0.65, 0.045, 0.045, -0.004),
+        (0.22, 1.20, 0.055, 0.045, -0.005),
+        (0.70, 2.70, 0.045, 0.055, -0.004),
+        (-1.25, 0.95, 0.050, 0.040, -0.004),
+    ]
+    defects = np.zeros_like(x)
+    for cx, cz, sx, sz, amp in dents + bumps + fine_pits + fine_bumps:
+        defects += amp * np.exp(-(((x - cx) / sx) ** 2 + ((z - cz) / sz) ** 2))
+    joints = np.zeros_like(x)
+    for joint_x, phase in ((-0.95, 0.0), (0.15, 0.8), (1.05, 1.9)):
+        center = joint_x + 0.020 * np.sin(3.0 * z + phase) + 0.008 * np.sin(10.0 * z + phase)
+        width = 0.012 + 0.006 * (0.5 + 0.5 * np.sin(4.5 * z + phase))
+        joints += np.where(np.abs(x - center) < width, 0.006, 0.0)
+    for joint_z, phase in ((0.75, 0.4), (1.55, 1.5), (2.35, 2.1)):
+        center = joint_z + 0.020 * np.sin(2.8 * x + phase) + 0.008 * np.sin(8.0 * x)
+        width = 0.012 + 0.006 * (0.5 + 0.5 * np.sin(4.0 * x + phase))
+        joints += np.where(np.abs(z - center) < width, 0.005, 0.0)
+    patches = np.zeros_like(x)
+    for x0, x1, z0, z1, offset in (
+        (-1.35, -0.95, 0.35, 0.75, 0.005),
+        (-0.25, 0.15, 1.00, 1.45, 0.004),
+        (0.65, 1.20, 2.10, 2.58, 0.006),
+    ):
+        patches += np.where((x > x0) & (x < x1) & (z > z0) & (z < z1), offset, 0.0)
+    return bow + waves + defects + joints + patches
+
+
+def _facade_scan_boxes() -> list[tuple[str, tuple[float, float, float], tuple[float, float], tuple[float, float, float]]]:
+    boxes: list[tuple[str, tuple[float, float, float], tuple[float, float], tuple[float, float, float]]] = []
+    window_specs = [
+        ("window_a", (-0.82, 0.90), (0.45, 0.014, 0.58)),
+        ("window_b", (0.72, 1.85), (0.55, 0.014, 0.70)),
+    ]
+    for name, xz, size in window_specs:
+        x, z = xz
+        sx, sy, sz = size
+        boxes.append((f"{name}_glass", size, xz, (0.04, 0.08, 0.12)))
+        for suffix, frame_size, frame_xz in (
+            ("top", (sx + 0.12, 0.018, 0.04), (x, z + sz / 2.0 + 0.045)),
+            ("bottom", (sx + 0.12, 0.018, 0.04), (x, z - sz / 2.0 - 0.045)),
+            ("left", (0.04, 0.018, sz + 0.12), (x - sx / 2.0 - 0.045, z)),
+            ("right", (0.04, 0.018, sz + 0.12), (x + sx / 2.0 + 0.045, z)),
+        ):
+            boxes.append((f"{name}_{suffix}", frame_size, frame_xz, (0.88, 0.86, 0.80)))
+
+    boxes.extend(
+        [
+            ("repair_patch_0", (0.42, 0.014, 0.35), (-1.10, 0.48), (0.70, 0.68, 0.60)),
+            ("repair_patch_1", (0.44, 0.014, 0.45), (-0.12, 1.25), (0.78, 0.74, 0.65)),
+            ("repair_patch_2", (0.62, 0.014, 0.48), (0.92, 2.35), (0.65, 0.62, 0.56)),
+        ]
+    )
+
+    for j, (base_x, phase) in enumerate(((-0.95, 0.0), (0.15, 0.8), (1.05, 1.9))):
+        for seg in range(5):
+            z = 0.35 + seg * 0.55
+            x = base_x + 0.020 * math.sin(3.0 * z + phase) + 0.008 * math.sin(10.0 * z + phase)
+            height = 0.30 + 0.06 * math.sin(2.3 * seg + phase)
+            width = 0.018 + 0.006 * ((seg + j) % 3)
+            boxes.append((f"vertical_joint_marker_{j}_{seg}", (width, 0.016, height), (x, z), (0.28, 0.28, 0.30)))
+    for j, (base_z, phase) in enumerate(((0.75, 0.4), (1.55, 1.5), (2.35, 2.1))):
+        for seg in range(5):
+            x = -1.20 + seg * 0.55
+            z = base_z + 0.020 * math.sin(2.8 * x + phase) + 0.008 * math.sin(8.0 * x)
+            length = 0.30 + 0.10 * math.sin(1.7 * seg + phase)
+            height = 0.018 + 0.006 * ((seg + j) % 2)
+            boxes.append((f"horizontal_joint_marker_{j}_{seg}", (length, 0.016, height), (x, z), (0.34, 0.34, 0.36)))
+
+    for idx, x, z, sx, sz in (
+        (0, -0.72, 0.78, 0.16, 0.06),
+        (1, 0.65, 2.15, 0.22, 0.07),
+        (2, 1.05, 1.15, 0.14, 0.05),
+        (3, -1.10, 2.42, 0.20, 0.06),
+    ):
+        boxes.append((f"chip_marker_{idx}", (sx, 0.016, sz), (x, z), (0.18, 0.18, 0.19)))
+
+    for idx, x, z in (
+        (0, -0.55, 0.48),
+        (1, -0.08, 0.92),
+        (2, 0.42, 1.35),
+        (3, 0.80, 1.78),
+        (4, -1.18, 1.95),
+        (5, -0.78, 2.60),
+        (6, 1.12, 2.35),
+    ):
+        boxes.append((f"fine_pit_marker_{idx}", (0.055, 0.012, 0.055), (x, z), (0.12, 0.12, 0.13)))
+    return boxes
+
+
+def _box_center_y_for_scan_box(name: str, size: tuple[float, float, float], xz: tuple[float, float]) -> float:
+    _, sy, _ = size
+    x, z = xz
+    if name.endswith("_glass"):
+        clearance = 0.020
+    elif name.startswith("fine_pit"):
+        clearance = 0.002
+    elif name.startswith(("vertical_joint", "horizontal_joint", "chip")):
+        clearance = 0.003
+    else:
+        clearance = 0.004
+    return _surface_front_y(x, z, sy, clearance_m=clearance)
+
+
+def _scene_surface_y_array(x_m: np.ndarray, z_m: np.ndarray) -> np.ndarray:
+    x = np.asarray(x_m, dtype=np.float64)
+    z = np.asarray(z_m, dtype=np.float64)
+    surface = _facade_y_offset_vectorized(x, z)
+    for name, size, xz, _color in _facade_scan_boxes():
+        sx, sy, sz = size
+        cx, cz = xz
+        mask = (np.abs(x - cx) <= sx * 0.5) & (np.abs(z - cz) <= sz * 0.5)
+        if np.any(mask):
+            front_y = _box_center_y_for_scan_box(name, size, xz) - sy * 0.5
+            surface = np.where(mask, np.minimum(surface, front_y), surface)
+    return surface
+
+
+def _build_scene_surface_raster(res_m: float = 0.001) -> tuple[np.ndarray, float, float, float]:
+    """Precompute the full scene surface (smooth + boxes) into a dense XZ raster.
+
+    Called once at startup. Lookup at profile time is a simple integer index —
+    ~1000× faster than calling _scene_surface_y_array per bisection iteration.
+    """
+    x_min, x_max = -1.65, 1.65
+    z_min, z_max = -0.05, 3.20
+    xs = np.arange(x_min, x_max + res_m, res_m)
+    zs = np.arange(z_min, z_max + res_m, res_m)
+    XX, ZZ = np.meshgrid(xs, zs, indexing="ij")
+    surface = _facade_y_offset_vectorized(XX.ravel(), ZZ.ravel()).reshape(XX.shape)
+    for name, size, xz, _color in _facade_scan_boxes():
+        sx, sy, sz = size
+        cx, cz = xz
+        xi = np.where((xs >= cx - sx * 0.5) & (xs <= cx + sx * 0.5))[0]
+        zi = np.where((zs >= cz - sz * 0.5) & (zs <= cz + sz * 0.5))[0]
+        if xi.size and zi.size:
+            front_y = _box_center_y_for_scan_box(name, size, xz) - sy * 0.5
+            surface[np.ix_(xi, zi)] = np.minimum(surface[np.ix_(xi, zi)], front_y)
+    return surface, float(x_min), float(z_min), float(res_m)
+
+
+def _make_raster_sampler(raster: np.ndarray, x0: float, z0: float, res_m: float):
+    """Return a fast surface sampler backed by nearest-neighbour raster lookup."""
+    nx, nz = raster.shape
+
+    def sampler(x_m: np.ndarray, z_m: np.ndarray) -> np.ndarray:
+        xi = np.clip(np.round((np.asarray(x_m, dtype=np.float64) - x0) / res_m).astype(np.int32), 0, nx - 1)
+        zi = np.clip(np.round((np.asarray(z_m, dtype=np.float64) - z0) / res_m).astype(np.int32), 0, nz - 1)
+        return raster[xi, zi]
+
+    return sampler
 
 
 def _wall_valid_mask(points_world: np.ndarray) -> np.ndarray:
@@ -358,7 +556,7 @@ def _create_defect_facade(stage) -> None:
     facade = UsdGeom.Xform.Define(stage, FACADE_PATH)
     _make_rigid(facade.GetPrim(), 1.0e9, kinematic=True)
 
-    resolution = 180
+    resolution = 90
     xs = [
         -FACADE_WIDTH_M / 2.0 + FACADE_WIDTH_M * i / (resolution - 1)
         for i in range(resolution)
@@ -386,101 +584,11 @@ def _create_defect_facade(stage) -> None:
     surface.CreateDoubleSidedAttr(True)
     _add_collision(surface.GetPrim())
 
-    # Visible windows: recessed dark panels with light frames.
-    window_specs = [
-        ("window_a", (-3.7, 2.0), (0.80, 0.014, 0.95)),
-        ("window_b", (0.9, 2.7), (0.95, 0.014, 1.20)),
-        ("window_c", (3.3, 6.1), (0.75, 0.014, 1.00)),
-        ("window_d", (-1.9, 7.2), (1.10, 0.014, 1.25)),
-    ]
-    for name, xz, size in window_specs:
+    for name, size, xz, color in _facade_scan_boxes():
         x, z = xz
-        sx, sy, sz = size
-        y = _surface_front_y(x, z, sy, clearance_m=0.020)
-        window = _create_box(stage, f"{FACADE_PATH}/{name}_glass", size, (x, y, z), (0.04, 0.08, 0.12))
-        _add_collision(window.GetPrim())
-        for suffix, frame_size, frame_xz in (
-            ("top", (sx + 0.12, 0.018, 0.04), (x, z + sz / 2.0 + 0.045)),
-            ("bottom", (sx + 0.12, 0.018, 0.04), (x, z - sz / 2.0 - 0.045)),
-            ("left", (0.04, 0.018, sz + 0.12), (x - sx / 2.0 - 0.045, z)),
-            ("right", (0.04, 0.018, sz + 0.12), (x + sx / 2.0 + 0.045, z)),
-        ):
-            fx, fz = frame_xz
-            fy = _surface_front_y(fx, fz, frame_size[1], clearance_m=0.004)
-            _create_box(stage, f"{FACADE_PATH}/{name}_{suffix}", frame_size, (fx, fy, fz), (0.88, 0.86, 0.80))
-
-    # High-contrast markers for defects/repair patches.
-    for idx, size, pos, color in (
-        (0, (0.90, 0.014, 0.75), (-3.95, 1.30), (0.70, 0.68, 0.60)),
-        (1, (0.80, 0.014, 0.90), (-0.30, 3.65), (0.78, 0.74, 0.65)),
-        (2, (1.20, 0.014, 0.95), (2.90, 7.50), (0.65, 0.62, 0.56)),
-        (3, (1.10, 0.014, 0.70), (-2.25, 8.65), (0.46, 0.45, 0.44)),
-    ):
-        x, z = pos
-        y = _surface_front_y(x, z, size[1], clearance_m=0.004)
-        _create_box(stage, f"{FACADE_PATH}/repair_patch_{idx}", size, (x, y, z), color)
-
-    for j, (base_x, phase) in enumerate(((-3.2, 0.0), (-1.1, 0.8), (1.2, 1.9), (3.4, 2.7))):
-        for seg in range(14):
-            z = 0.45 + seg * 0.68
-            x = base_x + 0.035 * math.sin(1.7 * z + phase) + 0.012 * math.sin(6.5 * z + phase)
-            height = 0.42 + 0.10 * math.sin(2.3 * seg + phase)
-            width = 0.018 + 0.006 * ((seg + j) % 3)
-            _create_box(
-                stage,
-                f"{FACADE_PATH}/vertical_joint_marker_{j}_{seg}",
-                (width, 0.016, height),
-                (x, _surface_front_y(x, z, 0.016, clearance_m=0.003), z),
-                (0.28, 0.28, 0.30),
-            )
-    for j, (base_z, phase) in enumerate(((2.2, 0.4), (5.0, 1.5), (7.8, 2.1))):
-        for seg in range(13):
-            x = -4.5 + seg * 0.75
-            z = base_z + 0.030 * math.sin(1.4 * x + phase) + 0.010 * math.sin(5.5 * x)
-            length = 0.45 + 0.15 * math.sin(1.7 * seg + phase)
-            height = 0.018 + 0.006 * ((seg + j) % 2)
-            _create_box(
-                stage,
-                f"{FACADE_PATH}/horizontal_joint_marker_{j}_{seg}",
-                (length, 0.016, height),
-                (x, _surface_front_y(x, z, 0.016, clearance_m=0.003), z),
-                (0.34, 0.34, 0.36),
-            )
-
-    # Small visible chips/cracks.
-    for idx, x, z, sx, sz in (
-        (0, -2.2, 2.8, 0.18, 0.07),
-        (1, 1.9, 6.8, 0.24, 0.08),
-        (2, 3.6, 3.2, 0.16, 0.06),
-        (3, -3.5, 7.4, 0.22, 0.06),
-        (4, 0.4, 8.4, 0.28, 0.06),
-    ):
-        _create_box(
-            stage,
-            f"{FACADE_PATH}/chip_marker_{idx}",
-            (sx, 0.016, sz),
-            (x, _surface_front_y(x, z, 0.016, clearance_m=0.003), z),
-            (0.18, 0.18, 0.19),
-        )
-
-    # Fine pitting markers visible in close inspection.
-    for idx, x, z in (
-        (0, -0.9, 1.5),
-        (1, -0.1, 2.9),
-        (2, 1.4, 4.2),
-        (3, 2.7, 5.4),
-        (4, -3.9, 6.1),
-        (5, -2.6, 8.7),
-        (6, 3.8, 7.2),
-        (7, 4.5, 3.9),
-    ):
-        _create_box(
-            stage,
-            f"{FACADE_PATH}/fine_pit_marker_{idx}",
-            (0.055, 0.012, 0.055),
-            (x, _surface_front_y(x, z, 0.012, clearance_m=0.002), z),
-            (0.12, 0.12, 0.13),
-        )
+        y = _box_center_y_for_scan_box(name, size, xz)
+        box = _create_box(stage, f"{FACADE_PATH}/{name}", size, (x, y, z), color)
+        _add_collision(box.GetPrim())
 
 
 def _add_scanner_frame_axes(stage, frame_path: str) -> None:
@@ -514,13 +622,11 @@ def _laser_contact_points(datasheet: dict, center_x_m: float, center_z_m: float)
     x_min = max(-FACADE_WIDTH_M / 2.0, center_x_m - profile_width_m / 2.0)
     x_max = min(FACADE_WIDTH_M / 2.0, center_x_m + profile_width_m / 2.0)
     sample_count = 160
-    points = []
-    for index in range(sample_count):
-        alpha = index / (sample_count - 1)
-        x = x_min + (x_max - x_min) * alpha
-        z = min(max(center_z_m, 0.0), FACADE_HEIGHT_M)
-        y = _surface_front_y(x, z, 0.012, clearance_m=0.0015)
-        points.append(Gf.Vec3f(x, y, z))
+    xs = np.linspace(x_min, x_max, sample_count, dtype=np.float64)
+    zs = np.full(sample_count, min(max(center_z_m, 0.0), FACADE_HEIGHT_M), dtype=np.float64)
+    # Draw just in front of the scanned hit surface to avoid z-fighting.
+    ys = _scene_surface_y_array(xs, zs) - 0.002
+    points = [Gf.Vec3f(float(x), float(y), float(z)) for x, y, z in zip(xs, ys, zs)]
     return Vt.Vec3fArray(points)
 
 
@@ -544,10 +650,119 @@ def _add_scan_path_preview(stage, datasheet: dict) -> None:
     curve.CreateDisplayColorAttr(Vt.Vec3fArray([Gf.Vec3f(1.0, 0.82, 0.05)]))
 
 
+class GocatorStreamingExporter:
+    """Flush Gocator valid points to disk in batches; finalize to PLY + heightmap.
+
+    Only xyz (float32) of valid points is kept per batch so peak RAM during
+    acquisition stays low (~70 MB per batch at BATCH_SIZE=2000 profiles).
+    At finalize() all batch files are loaded once to write the final outputs.
+    """
+
+    BATCH_SIZE = 2000
+
+    def __init__(self, output_dir: Path, profile_spacing_m: float = 0.0005) -> None:
+        self.output_dir = output_dir
+        self.profile_spacing_m = profile_spacing_m
+        output_dir.mkdir(parents=True, exist_ok=True)
+        self._xyz_buffer: list[np.ndarray] = []
+        self._batch_index = 0
+        self.total_profiles = 0
+        self.total_valid_points = 0
+
+    def add_profile(self, profile: GocatorProfile) -> None:
+        valid_pts = profile.valid_points_m
+        if valid_pts.size:
+            self._xyz_buffer.append(valid_pts.astype(np.float32))
+            self.total_valid_points += len(valid_pts)
+        self.total_profiles += 1
+        if self.total_profiles % self.BATCH_SIZE == 0:
+            self._flush()
+
+    def _flush(self) -> None:
+        if not self._xyz_buffer:
+            return
+        batch = np.vstack(self._xyz_buffer)
+        np.save(self.output_dir / f"_pts_batch_{self._batch_index:05d}.npy", batch)
+        self._batch_index += 1
+        self._xyz_buffer.clear()
+
+    def finalize(self) -> np.ndarray:
+        """Flush remaining buffer, write PLY + heightmap, delete batch files. Returns cloud."""
+        self._flush()
+        batch_paths = sorted(self.output_dir.glob("_pts_batch_*.npy"))
+        if not batch_paths:
+            cloud = np.empty((0, 3), dtype=np.float32)
+        else:
+            cloud = np.vstack([np.load(p) for p in batch_paths])
+            for p in batch_paths:
+                p.unlink()
+
+        export_point_cloud_ply(self.output_dir / "gocator_point_cloud.ply", cloud)
+        height_map = _cloud_to_height_map_array(cloud, self.profile_spacing_m)
+        export_height_map_npy(self.output_dir / "gocator_height_map.npy", height_map)
+        return cloud
+
+
+class LightweightDisplayAccumulator:
+    """Accumulate valid xyz (float32) with a stride for RViz preview.
+
+    Stores 1 profile out of every `display_stride` to keep memory bounded.
+    Old chunks are evicted when the total exceeds `max_points * 1.5`.
+    """
+
+    def __init__(self, max_points: int, display_stride: int) -> None:
+        self.max_points = max_points
+        self.display_stride = max(1, display_stride)
+        self._chunks: list[np.ndarray] = []
+        self._total_points = 0
+        self._profile_count = 0
+
+    def add_profile(self, profile: GocatorProfile) -> None:
+        self._profile_count += 1
+        if self._profile_count % self.display_stride != 0:
+            return
+        pts = profile.valid_points_m
+        if pts.size == 0:
+            return
+        chunk = pts.astype(np.float32)
+        self._chunks.append(chunk)
+        self._total_points += len(chunk)
+        # Evict oldest chunks when well over budget
+        while self._total_points > self.max_points * 1.5 and len(self._chunks) > 1:
+            self._total_points -= len(self._chunks.pop(0))
+
+    def get_display_points(self) -> np.ndarray:
+        if not self._chunks:
+            return np.empty((0, 3), dtype=np.float32)
+        cloud = np.vstack(self._chunks)
+        if len(cloud) <= self.max_points:
+            return cloud
+        idx = np.linspace(0, len(cloud) - 1, self.max_points, dtype=np.int64)
+        return cloud[idx]
+
+
+def _cloud_to_height_map_array(
+    cloud: np.ndarray,
+    profile_spacing_m: float,
+    x_resolution_m: float = 0.005,
+    fill_value: float = np.nan,
+) -> np.ndarray:
+    """Build a 2-D height map from an (N, 3) xyz point cloud."""
+    if cloud.size == 0:
+        return np.empty((0, 0), dtype=np.float32)
+    x_res = x_resolution_m
+    y_res = profile_spacing_m
+    x_bins = np.floor((cloud[:, 0] - cloud[:, 0].min()) / x_res).astype(np.int32)
+    y_bins = np.floor((cloud[:, 2] - cloud[:, 2].min()) / y_res).astype(np.int32)
+    image = np.full((y_bins.max() + 1, x_bins.max() + 1), fill_value, dtype=np.float32)
+    image[y_bins, x_bins] = cloud[:, 1]
+    return image
+
+
 class IsaacGocatorRosBridge:
     """Publish Gocator data generated from the Isaac scanner state to ROS 2."""
 
-    def __init__(self, datasheet: dict) -> None:
+    def __init__(self, datasheet: dict, surface_sampler=None) -> None:
         import rclpy
         from sensor_msgs.msg import PointCloud2, PointField
         from std_msgs.msg import Header
@@ -565,12 +780,14 @@ class IsaacGocatorRosBridge:
         self.publish_period_s = 1.0 / max(ARGS.ros_publish_rate, 1e-6)
         self.last_publish_s = -1.0
         self.max_points = ARGS.ros_max_points
+        self.display_stride = max(1, ARGS.ros_profile_stride)
+        self.display_point_stride = max(1, ARGS.ros_profile_point_stride)
 
         spec = Gocator2690Spec(
             points_per_profile=int(datasheet.get("points_per_profile", 3700)),
             profile_spacing_m=float(datasheet.get("profile_spacing_m", 0.0005)),
             nominal_standoff_m=_gocator_standoff_m(datasheet),
-            nominal_profile_rate_hz=float(datasheet.get("nominal_profile_rate_hz", 40.0)),
+            nominal_profile_rate_hz=float(datasheet.get("nominal_profile_rate_hz", 2000.0)),
         )
         self.datasheet = datasheet
         self.scan_speed_m_s = ARGS.scan_speed if ARGS.scan_speed > 0.0 else _gocator_scan_speed_m_s(datasheet)
@@ -578,11 +795,29 @@ class IsaacGocatorRosBridge:
         self.next_profile_time_s = 0.0
         self.profile_index = 0
         self.profiler = Gocator2690LineProfiler(spec)
-        self.accumulator = GocatorPointCloudAccumulator(spec.profile_spacing_m)
+
+        # Display accumulator: lightweight xyz float32 with stride for RViz.
+        self.display_accumulator = LightweightDisplayAccumulator(
+            max_points=self.max_points,
+            display_stride=self.display_stride,
+        )
+
+        self._surface_sampler = surface_sampler if surface_sampler is not None else _scene_surface_y_array
+
+        # Streaming exporter: full-res valid points flushed to disk per batch.
+        self.exporter: GocatorStreamingExporter | None = None
+        if ARGS.record_full_res:
+            output_dir = ARGS.record_output_dir
+            if not output_dir.is_absolute():
+                output_dir = PROJECT_ROOT / output_dir
+            self.exporter = GocatorStreamingExporter(output_dir, spec.profile_spacing_m)
+
         self.node.get_logger().info(
-            f"Isaac ROS bridge publishing /gocator/profile_points and /gocator/points "
-            f"({spec.points_per_profile} pts/profile, {spec.nominal_profile_rate_hz:.1f} Hz, "
-            f"spacing={spec.profile_spacing_m:.6f} m, scan_speed={self.scan_speed_m_s:.4f} m/s)"
+            f"Isaac ROS bridge: {spec.points_per_profile} pts/profile, "
+            f"{spec.nominal_profile_rate_hz:.0f} Hz, spacing={spec.profile_spacing_m:.4f} m, "
+            f"scan_speed={self.scan_speed_m_s:.3f} m/s | "
+            f"display_stride={self.display_stride}, max_display_pts={self.max_points}, "
+            f"export={'streaming' if self.exporter else 'off'}"
         )
 
     def update(self, timestamp_s: float) -> None:
@@ -594,21 +829,56 @@ class IsaacGocatorRosBridge:
                 self.scan_speed_m_s,
             )
             profile = self._sample_profile_at_pose(scanner_pose, self.next_profile_time_s)
-            self.accumulator.add_profile(profile)
-            self.profile_pub.publish(self._pointcloud2(profile.valid_points_m, stamp))
+
+            # Full-res streaming export: every profile.
+            if self.exporter is not None:
+                self.exporter.add_profile(profile)
+
+            # Display: strided, lightweight, for RViz.
+            self.display_accumulator.add_profile(profile)
+            if self.profile_index % self.display_stride == 0:
+                pts = profile.valid_points_m
+                if self.display_point_stride > 1:
+                    pts = pts[:: self.display_point_stride]
+                self.profile_pub.publish(self._pointcloud2(pts, stamp))
+
             self.profile_index += 1
             self.next_profile_time_s += self.profile_period_s
 
         if self.last_publish_s < 0.0 or timestamp_s - self.last_publish_s >= self.publish_period_s:
             self.last_publish_s = timestamp_s
-            self.cloud_pub.publish(self._pointcloud2(self._preview_cloud(), stamp))
+            self.cloud_pub.publish(self._pointcloud2(self.display_accumulator.get_display_points(), stamp))
         self.rclpy.spin_once(self.node, timeout_sec=0.0)
 
     def shutdown(self) -> None:
-        self.node.get_logger().info(f"Isaac ROS bridge published {self.profile_index} Gocator profiles")
+        if self.exporter is not None:
+            self._finalize_export()
+        self.node.get_logger().info(f"Isaac ROS bridge: {self.profile_index} profiles processed")
         self.node.destroy_node()
         if self.rclpy.ok():
             self.rclpy.shutdown()
+
+    def _finalize_export(self) -> None:
+        output_dir = self.exporter.output_dir
+        cloud = self.exporter.finalize()
+        summary = {
+            "profiles": self.exporter.total_profiles,
+            "valid_points": int(len(cloud)),
+            "points_per_profile": int(self.profiler.spec.points_per_profile),
+            "profile_rate_hz": float(self.profiler.spec.nominal_profile_rate_hz),
+            "profile_spacing_m": float(self.profiler.spec.profile_spacing_m),
+            "scan_speed_m_s": float(self.scan_speed_m_s),
+            "files": {
+                "point_cloud_ply": "gocator_point_cloud.ply",
+                "height_map_npy": "gocator_height_map.npy",
+            },
+        }
+        with (output_dir / "scan_summary.json").open("w", encoding="utf-8") as fp:
+            json.dump(summary, fp, indent=2)
+        self.node.get_logger().info(
+            f"Exported scan to {output_dir} "
+            f"({self.exporter.total_profiles} profiles, {len(cloud)} valid points)"
+        )
 
     def _sample_profile_at_pose(self, scanner_pose: Gf.Vec3d, timestamp_s: float):
         pose = ScannerFramePose.from_arrays(
@@ -619,30 +889,13 @@ class IsaacGocatorRosBridge:
         )
         profile = self.profiler.sample_surface(
             pose,
-            _facade_y_offset_array,
+            self._surface_sampler,
             timestamp_s=timestamp_s,
             profile_index=self.profile_index,
             encoder_position_m=timestamp_s * self.scan_speed_m_s,
         )
         profile.valid_mask &= _wall_valid_mask(profile.points_world)
         return profile
-
-    def _preview_cloud(self) -> np.ndarray:
-        profiles = self.accumulator.profiles
-        if not profiles:
-            return np.empty((0, 3), dtype=np.float64)
-        total_valid = sum(int(profile.valid_mask.sum()) for profile in profiles)
-        if self.max_points <= 0 or total_valid <= self.max_points:
-            return self.accumulator.point_cloud()
-        per_profile_budget = max(2, self.max_points // len(profiles))
-        sampled_profiles = [
-            _sample_profile_points(profile, per_profile_budget)
-            for profile in profiles
-        ]
-        sampled_profiles = [points for points in sampled_profiles if len(points)]
-        if not sampled_profiles:
-            return np.empty((0, 3), dtype=np.float64)
-        return np.vstack(sampled_profiles)
 
     def _pointcloud2(self, points: np.ndarray, stamp) -> object:
         points32 = np.asarray(points, dtype=np.float32)
@@ -661,15 +914,6 @@ class IsaacGocatorRosBridge:
         message.is_dense = True
         message.data = points32.tobytes()
         return message
-
-
-def _sample_profile_points(profile: GocatorProfile, max_points: int) -> np.ndarray:
-    points = profile.valid_points_m
-    if len(points) <= max_points:
-        return points
-    indices = np.linspace(0, len(points) - 1, max_points, dtype=np.int64)
-    return points[indices]
-
 
 def _create_gocator_sensor(stage) -> str | None:
     config = _SENSOR_CONFIG.get("gocator2690", {})
@@ -756,7 +1000,13 @@ def build_scene():
     sun.CreateIntensityAttr(1200.0)
     sun.CreateAngleAttr(1.0)
 
-    ground = _create_box(stage, GROUND_PATH, (12.0, 6.0, 0.05), (0.0, -1.0, -0.025), (0.22, 0.24, 0.25))
+    ground = _create_box(
+        stage,
+        GROUND_PATH,
+        (FACADE_WIDTH_M + 2.0, 4.0, 0.05),
+        (0.0, -1.0, -0.025),
+        (0.22, 0.24, 0.25),
+    )
     _add_collision(ground.GetPrim())
 
     _create_defect_facade(stage)
@@ -774,7 +1024,7 @@ def main() -> int:
     stage.GetRootLayer().Export(str(out))
     print(f"Saved scene: {out}", flush=True)
 
-    SimulationManager.setup_simulation(dt=1.0 / 60.0, device="cpu")
+    SimulationManager.setup_simulation(dt=ARGS.sim_dt, device="cpu")
     app_utils.play()
     simulation_app.update()
 
@@ -787,11 +1037,20 @@ def main() -> int:
     ros_bridge = None
     if ARGS.ros_bridge and not ARGS.no_ros:
         try:
-            ros_bridge = IsaacGocatorRosBridge(datasheet)
+            print("[surface] Precomputing facade surface raster (1 mm)...", flush=True)
+            _raster, _rx0, _rz0, _rres = _build_scene_surface_raster(res_m=0.001)
+            _fast_surface = _make_raster_sampler(_raster, _rx0, _rz0, _rres)
+            print("[surface] Raster ready.", flush=True)
+            ros_bridge = IsaacGocatorRosBridge(datasheet, surface_sampler=_fast_surface)
         except Exception as exc:
             print(f"[ros_bridge] disabled: {exc}", flush=True)
 
-    sim_dt = 1.0 / 60.0
+    sim_dt = ARGS.sim_dt
+    scan_speed_m_s = ARGS.scan_speed if ARGS.scan_speed > 0.0 else _gocator_scan_speed_m_s(datasheet)
+    scan_duration_s = _scan_path_length_m(datasheet) / scan_speed_m_s if scan_speed_m_s > 0.0 else 0.0
+    if ARGS.stop_after_scan:
+        print(f"[scan] stop-after-scan enabled, estimated duration={scan_duration_s:.2f}s", flush=True)
+
     frame_count = 0
     try:
         while simulation_app.is_running():
@@ -805,6 +1064,9 @@ def main() -> int:
             frame_count += 1
             if frame_limit > 0 and frame_count >= frame_limit:
                 print(f"Completed {frame_count} simulation frames", flush=True)
+                break
+            if ARGS.stop_after_scan and scan_duration_s > 0.0 and elapsed_s >= scan_duration_s:
+                print(f"Completed one full scan path in {elapsed_s:.2f}s simulated time", flush=True)
                 break
     finally:
         if ros_bridge is not None:
