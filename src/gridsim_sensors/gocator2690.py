@@ -243,16 +243,8 @@ class Gocator2690LineProfiler:
         hits = origins + directions * t[:, None]
         local_hits = pose.world_to_scanner(hits)
         ranges = local_hits[:, 2]
-        frustum_width = self.spec.width_at_distance(ranges)
 
-        valid = (
-            non_parallel
-            & np.isfinite(t)
-            & (t >= 0.0)
-            & (ranges >= self.spec.min_measurement_distance_m)
-            & (ranges <= self.spec.max_measurement_distance_m)
-            & (np.abs(local_hits[:, 0]) <= 0.5 * frustum_width)
-        )
+        valid = non_parallel & self._valid_from_ranges(t, local_hits, ranges)
 
         normals = np.repeat(plane_normal[None, :], self.spec.points_per_profile, axis=0)
         return self._make_profile(
@@ -306,14 +298,7 @@ class Gocator2690LineProfiler:
         hits = origins + directions * t[:, None]
         local_hits = pose.world_to_scanner(hits)
         ranges = local_hits[:, 2]
-        frustum_width = self.spec.width_at_distance(ranges)
-        valid = (
-            bracketed
-            & np.isfinite(t)
-            & (ranges >= self.spec.min_measurement_distance_m)
-            & (ranges <= self.spec.max_measurement_distance_m)
-            & (np.abs(local_hits[:, 0]) <= 0.5 * frustum_width)
-        )
+        valid = bracketed & self._valid_from_ranges(t, local_hits, ranges)
         normals = _height_field_normals(surface_y_m, hits, normal_epsilon_m)
         return self._make_profile(
             timestamp_s=timestamp_s,
@@ -325,6 +310,52 @@ class Gocator2690LineProfiler:
             ranges_m=ranges,
             local_x_m=local_x_m,
             valid_mask=valid,
+        )
+
+    def sample_mesh(
+        self,
+        pose: ScannerFramePose,
+        ray_intersect_fn: Callable[[np.ndarray, np.ndarray], tuple[np.ndarray, np.ndarray]],
+        *,
+        timestamp_s: float = 0.0,
+        profile_index: int = 0,
+        encoder_position_m: float = 0.0,
+    ) -> GocatorProfile:
+        """Intersect the profile rays with an arbitrary triangle mesh via a raycast callback.
+
+        `ray_intersect_fn(origins, directions)` returns `(t, normals)`: t is NaN for a ray with
+        no hit, otherwise the distance along the (unit) direction to the hit point.
+        """
+        origins, directions, local_x_m = self.ray_pattern(
+            pose, standoff_m=self.spec.nominal_standoff_m
+        )
+        t, normals = ray_intersect_fn(origins, directions)
+        hits = origins + directions * np.nan_to_num(t, nan=0.0)[:, None]
+        local_hits = pose.world_to_scanner(hits)
+        ranges = local_hits[:, 2]
+        valid = self._valid_from_ranges(t, local_hits, ranges)
+        return self._make_profile(
+            timestamp_s=timestamp_s,
+            profile_index=profile_index,
+            encoder_position_m=encoder_position_m,
+            pose=pose,
+            points_world=hits,
+            hit_normals_world=normals,
+            ranges_m=ranges,
+            local_x_m=local_x_m,
+            valid_mask=valid,
+        )
+
+    def _valid_from_ranges(
+        self, t: np.ndarray, local_hits: np.ndarray, ranges: np.ndarray
+    ) -> np.ndarray:
+        frustum_width = self.spec.width_at_distance(ranges)
+        return (
+            np.isfinite(t)
+            & (t >= 0.0)
+            & (ranges >= self.spec.min_measurement_distance_m)
+            & (ranges <= self.spec.max_measurement_distance_m)
+            & (np.abs(local_hits[:, 0]) <= 0.5 * frustum_width)
         )
 
     def _make_profile(

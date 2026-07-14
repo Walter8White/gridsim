@@ -56,3 +56,15 @@ Set `ISAAC_SIM_DIR` if the release build is installed elsewhere:
 ```bash
 ISAAC_SIM_DIR=/path/to/isaacsim ./isaac/run_mvp.sh
 ```
+
+## Real ray-triangle raycast (`--raycast-mode mesh`)
+
+By default the Gocator profile sampler bisection-searches an analytic height field
+(`--raycast-mode analytic`). Passing `--raycast-mode mesh` instead intersects the profile rays
+against the actual triangle mesh built for the facade (surface + defect boxes), via `trimesh`.
+This is useful to validate the analytic path against real geometry. It requires `trimesh` in
+Isaac Sim's bundled Python environment (one-time install):
+
+```bash
+"${ISAAC_SIM_DIR:-$HOME/isaacsim/_build/linux-x86_64/release}/python.sh" -m pip install trimesh rtree
+```

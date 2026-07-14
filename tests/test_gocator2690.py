@@ -63,6 +63,40 @@ def test_gocator_profile_rejects_hits_outside_measurement_range() -> None:
     assert not too_far.valid.any()
 
 
+def _plane_intersect_fn(origins: np.ndarray, directions: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Ray/plane intersection at y=0, normal (0,-1,0), mimicking sample_facade_plane's defaults."""
+    denom = directions[:, 1]
+    t = np.full(len(origins), np.nan, dtype=np.float64)
+    non_parallel = np.abs(denom) > 1e-9
+    t[non_parallel] = -origins[non_parallel, 1] / denom[non_parallel]
+    normals = np.tile(np.array([0.0, -1.0, 0.0]), (len(origins), 1))
+    return t, normals
+
+
+def test_gocator_sample_mesh_matches_facade_plane_for_flat_plane_intersector() -> None:
+    profiler = Gocator2690LineProfiler()
+    pose = _pose_at_y(-1.0)
+
+    mesh_profile = profiler.sample_mesh(pose, _plane_intersect_fn)
+    plane_profile = profiler.sample_facade_plane(pose)
+
+    np.testing.assert_array_equal(mesh_profile.valid, plane_profile.valid)
+    np.testing.assert_allclose(mesh_profile.hit_points_m, plane_profile.hit_points_m, atol=1e-9)
+    np.testing.assert_allclose(mesh_profile.ranges_m, plane_profile.ranges_m, atol=1e-9)
+
+
+def test_gocator_sample_mesh_marks_misses_invalid() -> None:
+    profiler = Gocator2690LineProfiler()
+
+    def all_miss(origins: np.ndarray, directions: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        n = len(origins)
+        return np.full(n, np.nan, dtype=np.float64), np.zeros((n, 3), dtype=np.float64)
+
+    profile = profiler.sample_mesh(_pose_at_y(-1.0), all_miss)
+
+    assert not profile.valid.any()
+
+
 def test_gocator_accumulator_builds_point_cloud() -> None:
     spec = Gocator2690Spec(points_per_profile=10)
     profiler = Gocator2690LineProfiler(spec)

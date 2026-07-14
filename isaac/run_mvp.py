@@ -13,6 +13,7 @@ import json
 import math
 import sys
 from pathlib import Path
+from typing import Callable
 
 
 def parse_args() -> argparse.Namespace:
@@ -27,6 +28,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ros-max-points", type=int, default=500000)
     parser.add_argument("--ros-profile-stride", type=int, default=1, help="Add one profile to the RViz display accumulator every N generated profiles.")
     parser.add_argument("--ros-profile-point-stride", type=int, default=1, help="Publish one point every N points when sending the current profile to RViz.")
+    parser.add_argument(
+        "--raycast-mode",
+        choices=["analytic", "mesh"],
+        default="analytic",
+        help="analytic: fast height-field bisection (default). mesh: real ray-triangle "
+        "raycast against the built facade mesh, for validation (requires trimesh).",
+    )
     parser.add_argument("--record-full-res", action="store_true", help="Export full-resolution Gocator profiles on shutdown.")
     parser.add_argument("--record-csv", action="store_true", help="Also export full-resolution profiles as CSV. This can be large.")
     parser.add_argument("--record-output-dir", type=Path, default=Path("outputs/gocator_scan"))
@@ -552,11 +560,8 @@ def _surface_front_y(x_m: float, z_m: float, depth_m: float, clearance_m: float 
     return _facade_y_offset(x_m, z_m) - depth_m / 2.0 - clearance_m
 
 
-def _create_defect_facade(stage) -> None:
-    facade = UsdGeom.Xform.Define(stage, FACADE_PATH)
-    _make_rigid(facade.GetPrim(), 1.0e9, kinematic=True)
-
-    resolution = 90
+def _facade_grid_points(resolution: int = 90) -> tuple[list[Gf.Vec3f], list[int], list[int]]:
+    """Regular XZ grid over the facade, height-offset per _facade_y_offset, as quad faces."""
     xs = [
         -FACADE_WIDTH_M / 2.0 + FACADE_WIDTH_M * i / (resolution - 1)
         for i in range(resolution)
@@ -574,6 +579,99 @@ def _create_defect_facade(stage) -> None:
             i = row * resolution + col
             counts.append(4)
             indices.extend([i, i + 1, i + resolution + 1, i + resolution])
+    return points, counts, indices
+
+
+def _box_triangles(size: tuple[float, float, float], center: tuple[float, float, float]) -> tuple[np.ndarray, np.ndarray]:
+    """Axis-aligned box as (8 vertices, 12 triangle faces) for raycast meshes."""
+    sx, sy, sz = size
+    cx, cy, cz = center
+    hx, hy, hz = sx * 0.5, sy * 0.5, sz * 0.5
+    vertices = np.array(
+        [
+            [cx - hx, cy - hy, cz - hz],
+            [cx + hx, cy - hy, cz - hz],
+            [cx + hx, cy + hy, cz - hz],
+            [cx - hx, cy + hy, cz - hz],
+            [cx - hx, cy - hy, cz + hz],
+            [cx + hx, cy - hy, cz + hz],
+            [cx + hx, cy + hy, cz + hz],
+            [cx - hx, cy + hy, cz + hz],
+        ],
+        dtype=np.float64,
+    )
+    faces = np.array(
+        [
+            [0, 1, 2], [0, 2, 3],  # -Z
+            [4, 6, 5], [4, 7, 6],  # +Z
+            [0, 4, 5], [0, 5, 1],  # -Y
+            [3, 2, 6], [3, 6, 7],  # +Y
+            [0, 3, 7], [0, 7, 4],  # -X
+            [1, 5, 6], [1, 6, 2],  # +X
+        ],
+        dtype=np.int64,
+    )
+    return vertices, faces
+
+
+def _facade_mesh_for_raycast(resolution: int = 90) -> tuple[np.ndarray, np.ndarray]:
+    """Facade surface + defect boxes as one triangle mesh, for real ray-triangle raycasting.
+
+    Reuses the same grid points and box placements as _create_defect_facade / the analytic
+    _scene_surface_y_array, so the raycast validates against the same geometry that's rendered.
+    """
+    points, _counts, _indices = _facade_grid_points(resolution)
+    vertices = np.array([[p[0], p[1], p[2]] for p in points], dtype=np.float64)
+    faces = []
+    for row in range(resolution - 1):
+        for col in range(resolution - 1):
+            i = row * resolution + col
+            faces.append((i, i + 1, i + resolution + 1))
+            faces.append((i, i + resolution + 1, i + resolution))
+    faces = np.array(faces, dtype=np.int64)
+
+    for name, size, xz, _color in _facade_scan_boxes():
+        x, z = xz
+        y = _box_center_y_for_scan_box(name, size, xz)
+        box_vertices, box_faces = _box_triangles(size, (x, y, z))
+        offset = len(vertices)
+        vertices = np.vstack([vertices, box_vertices])
+        faces = np.vstack([faces, box_faces + offset])
+    return vertices, faces
+
+
+def _build_facade_ray_intersector() -> Callable[[np.ndarray, np.ndarray], tuple[np.ndarray, np.ndarray]]:
+    """Build a ray_intersect_fn (see Gocator2690LineProfiler.sample_mesh) via real ray-triangle
+    intersection against the facade mesh, using trimesh. Requires `trimesh` in Isaac's Python env
+    (isaac/README.md documents the one-time install)."""
+    import trimesh
+
+    vertices, faces = _facade_mesh_for_raycast()
+    mesh = trimesh.Trimesh(vertices=vertices, faces=faces, process=False)
+    intersector = trimesh.ray.ray_triangle.RayMeshIntersector(mesh)
+
+    def intersect_fn(origins: np.ndarray, directions: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        n = len(origins)
+        t = np.full(n, np.nan, dtype=np.float64)
+        normals = np.zeros((n, 3), dtype=np.float64)
+        locations, index_ray, index_tri = intersector.intersects_location(
+            origins, directions, multiple_hits=False
+        )
+        if len(index_ray):
+            t[index_ray] = np.einsum(
+                "ij,ij->i", locations - origins[index_ray], directions[index_ray]
+            )
+            normals[index_ray] = mesh.face_normals[index_tri]
+        return t, normals
+
+    return intersect_fn
+
+
+def _create_defect_facade(stage) -> None:
+    facade = UsdGeom.Xform.Define(stage, FACADE_PATH)
+    _make_rigid(facade.GetPrim(), 1.0e9, kinematic=True)
+
+    points, counts, indices = _facade_grid_points(resolution=90)
 
     surface = UsdGeom.Mesh.Define(stage, f"{FACADE_PATH}/surface")
     surface.CreatePointsAttr(Vt.Vec3fArray(points))
@@ -762,7 +860,14 @@ def _cloud_to_height_map_array(
 class IsaacGocatorRosBridge:
     """Publish Gocator data generated from the Isaac scanner state to ROS 2."""
 
-    def __init__(self, datasheet: dict, surface_sampler=None) -> None:
+    def __init__(
+        self,
+        datasheet: dict,
+        surface_sampler=None,
+        *,
+        raycast_mode: str = "analytic",
+        ray_intersect_fn: Callable[[np.ndarray, np.ndarray], tuple[np.ndarray, np.ndarray]] | None = None,
+    ) -> None:
         import rclpy
         from sensor_msgs.msg import PointCloud2, PointField
         from std_msgs.msg import Header
@@ -803,6 +908,8 @@ class IsaacGocatorRosBridge:
         )
 
         self._surface_sampler = surface_sampler if surface_sampler is not None else _scene_surface_y_array
+        self.raycast_mode = raycast_mode
+        self._ray_intersect_fn = ray_intersect_fn
 
         # Streaming exporter: full-res valid points flushed to disk per batch.
         self.exporter: GocatorStreamingExporter | None = None
@@ -887,13 +994,22 @@ class IsaacGocatorRosBridge:
             [0.0, 0.0, 1.0],
             [0.0, 1.0, 0.0],
         )
-        profile = self.profiler.sample_surface(
-            pose,
-            self._surface_sampler,
-            timestamp_s=timestamp_s,
-            profile_index=self.profile_index,
-            encoder_position_m=timestamp_s * self.scan_speed_m_s,
-        )
+        if self.raycast_mode == "mesh":
+            profile = self.profiler.sample_mesh(
+                pose,
+                self._ray_intersect_fn,
+                timestamp_s=timestamp_s,
+                profile_index=self.profile_index,
+                encoder_position_m=timestamp_s * self.scan_speed_m_s,
+            )
+        else:
+            profile = self.profiler.sample_surface(
+                pose,
+                self._surface_sampler,
+                timestamp_s=timestamp_s,
+                profile_index=self.profile_index,
+                encoder_position_m=timestamp_s * self.scan_speed_m_s,
+            )
         profile.valid_mask &= _wall_valid_mask(profile.points_world)
         return profile
 
@@ -1037,11 +1153,19 @@ def main() -> int:
     ros_bridge = None
     if ARGS.ros_bridge and not ARGS.no_ros:
         try:
-            print("[surface] Precomputing facade surface raster (1 mm)...", flush=True)
-            _raster, _rx0, _rz0, _rres = _build_scene_surface_raster(res_m=0.001)
-            _fast_surface = _make_raster_sampler(_raster, _rx0, _rz0, _rres)
-            print("[surface] Raster ready.", flush=True)
-            ros_bridge = IsaacGocatorRosBridge(datasheet, surface_sampler=_fast_surface)
+            if ARGS.raycast_mode == "mesh":
+                print("[surface] Building facade raycast mesh (trimesh)...", flush=True)
+                intersect_fn = _build_facade_ray_intersector()
+                print("[surface] Raycast mesh ready.", flush=True)
+                ros_bridge = IsaacGocatorRosBridge(
+                    datasheet, raycast_mode="mesh", ray_intersect_fn=intersect_fn
+                )
+            else:
+                print("[surface] Precomputing facade surface raster (1 mm)...", flush=True)
+                _raster, _rx0, _rz0, _rres = _build_scene_surface_raster(res_m=0.001)
+                _fast_surface = _make_raster_sampler(_raster, _rx0, _rz0, _rres)
+                print("[surface] Raster ready.", flush=True)
+                ros_bridge = IsaacGocatorRosBridge(datasheet, surface_sampler=_fast_surface)
         except Exception as exc:
             print(f"[ros_bridge] disabled: {exc}", flush=True)
 
