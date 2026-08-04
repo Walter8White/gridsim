@@ -38,3 +38,11 @@ _build/
 *.mcap
 outputs/
 recordings/
+
+# KEYENCE LJ-S local build outputs and captures
+keyence_ljs8000/CPP/captures/
+keyence_ljs8000/CPP/obj/
+keyence_ljs8000/CPP/bin/main
+keyence_ljs8000/CPP/bin/check_status
+keyence_ljs8000/CPP/bin/keyence_cmd
+keyence_ljs8000/CPP/bin/keyence_setting
