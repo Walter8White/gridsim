@@ -2,3 +2,4 @@ numpy>=1.26,<3
 PyYAML>=6.0,<7
 pytest>=8.0,<10
 setuptools>=68
+ifcopenshell>=0.8,<1

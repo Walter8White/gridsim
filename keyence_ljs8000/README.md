@@ -9,7 +9,7 @@ cd keyence_ljs8000/CPP
 make
 ```
 
-The helper scripts in `CPP/bin` are versioned. Compiled binaries in `CPP/bin` and intermediate files in `CPP/obj` are ignored.
+User-facing scripts live in the repository-level `scripts/` folder. Compiled binaries in `CPP/bin` and intermediate files in `CPP/obj` are ignored.
 
 ## Network
 
@@ -32,8 +32,8 @@ sudo ip link set enp131s0 up
 ## Acquisition
 
 ```bash
-./bin/check_status
-./bin/main
+scripts/keyence_check_status.sh
+scripts/keyence_scan.sh
 ```
 
 By default `main` acquires data and prints statistics without saving files.
@@ -41,35 +41,35 @@ By default `main` acquires data and prints statistics without saving files.
 Save raw data:
 
 ```bash
-./bin/main --save-raw
+scripts/keyence_scan.sh --save-raw
 ```
 
 Save a PNG preview with invalid pixels in red:
 
 ```bash
-./bin/main --save-invalid-image
+scripts/keyence_scan.sh --save-invalid-image
 ```
 
 Save everything:
 
 ```bash
-./bin/main --save-all
+scripts/keyence_scan.sh --save-all
 ```
 
-Generated captures are written to `CPP/captures/` and ignored by Git.
+Generated captures are written to `keyence_ljs8000/CPP/captures/` and ignored by Git.
 
 ## Mesh Export
 
 Generate a PLY mesh from the latest capture:
 
 ```bash
-./bin/generate_ply --stride 8
+scripts/keyence_generate_ply.py --stride 8
 ```
 
 Generate an STL mesh:
 
 ```bash
-./bin/generate_stl --stride 8
+scripts/keyence_generate_stl.py --stride 8
 ```
 
 Lower stride means more detail and larger files. For FreeCAD, start with `--stride 16` or `--stride 8`.
@@ -79,15 +79,15 @@ Lower stride means more detail and larger files. For FreeCAD, start with `--stri
 Read the active program settings:
 
 ```bash
-./bin/keyence_setting get all
+scripts/keyence_setting.sh get all
 ```
 
 Example transient setting changes:
 
 ```bash
-./bin/keyence_setting set detection_sensitivity 5
-./bin/keyence_setting set dead_zone_interpolation 2
-./bin/keyence_setting set y_subsample 1
+scripts/keyence_setting.sh set detection_sensitivity 5
+scripts/keyence_setting.sh set dead_zone_interpolation 2
+scripts/keyence_setting.sh set y_subsample 1
 ```
 
 Settings are written to RUNNING by default and are not saved across power cycles. Use `--save` only when intentionally writing to the head save area.

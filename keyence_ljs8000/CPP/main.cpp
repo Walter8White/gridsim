@@ -36,10 +36,11 @@ typedef struct {
 
 static void print_usage(const char* programName)
 {
-	printf("usage: %s [--save-raw] [--save-invalid-image] [--save-all]\n", programName);
+	printf("usage: %s [--save-raw] [--save-invalid-image] [--save-all] [--timeout-ms N]\n", programName);
 	printf("  --save-raw            Save height/luminance raw files and metadata CSV.\n");
 	printf("  --save-invalid-image  Save PNG image with invalid pixels in red.\n");
 	printf("  --save-all            Save raw files, metadata, and invalid-pixel image.\n");
+	printf("  --timeout-ms N        Acquisition timeout in milliseconds. Default: 30000.\n");
 }
 
 static HEIGHT_STATS compute_height_stats(unsigned short* heightImage, const LJS_ACQ_GETPARAM* getParam)
@@ -123,7 +124,10 @@ static int save_invalid_image(unsigned short* heightImage, const LJS_ACQ_GETPARA
 
 	char imagePath[300];
 	snprintf(imagePath, sizeof(imagePath), "%s_invalid_red.png", basePath);
-	if (!cv::imwrite(imagePath, image)) {
+	cv::Mat rotatedImage;
+	cv::rotate(image, rotatedImage, cv::ROTATE_90_COUNTERCLOCKWISE);
+
+	if (!cv::imwrite(imagePath, rotatedImage)) {
 		printf("Failed to write %s.\n", imagePath);
 		return 1;
 	}
@@ -208,6 +212,7 @@ int main(int argc, char *argv[]){
 	unsigned char *luminanceImage = NULL;	// Luminance image
 	int saveRaw = 0;
 	int saveInvalidImage = 0;
+	int timeout_ms = 30000;
 
 	for (int i = 1; i < argc; ++i) {
 		if (strcmp(argv[i], "--save-raw") == 0) {
@@ -217,6 +222,18 @@ int main(int argc, char *argv[]){
 		} else if (strcmp(argv[i], "--save-all") == 0) {
 			saveRaw = 1;
 			saveInvalidImage = 1;
+		} else if (strcmp(argv[i], "--timeout-ms") == 0) {
+			if (i + 1 >= argc) {
+				printf("--timeout-ms requires a value.\n");
+				print_usage(argv[0]);
+				return 1;
+			}
+			timeout_ms = atoi(argv[++i]);
+			if (timeout_ms <= 0) {
+				printf("--timeout-ms must be > 0.\n");
+				print_usage(argv[0]);
+				return 1;
+			}
 		} else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
 			print_usage(argv[0]);
 			return 0;
@@ -232,7 +249,6 @@ int main(int argc, char *argv[]){
 //-----------------------------------------------------------------
 	int deviceId 			=	0;		// Set "0" if you use only 1 head.
 	int	interpolateLines	=	1;		// Scale factor of Y lines(up to 8).
-	int	timeout_ms			= 	5000;	// Timeout value for the acquiring image (in milisecond).
 	int use_external_trigger = 0;		// Set "1" if you control the trigger timing externally. (e.g. terminal input)
 	
 	

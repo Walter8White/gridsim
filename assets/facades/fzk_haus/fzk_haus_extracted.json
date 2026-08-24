@@ -1,0 +1,732 @@
+{
+  "source_path": "/home/emilien/deploya/gridsim/assets/facades/fzk_haus/AC20-FZK-Haus.ifc",
+  "units": {
+    "length_unit_name": "METRE",
+    "scale_to_m": 1.0
+  },
+  "levels": [
+    {
+      "name": "Erdgeschoss",
+      "elevation_m": 0.0
+    },
+    {
+      "name": "Dachgeschoss",
+      "elevation_m": 2.7
+    }
+  ],
+  "walls": [
+    {
+      "guid": "2XPyKWY018sA1ygZKgQPtU",
+      "name": "Wand-Int-ERDG-4",
+      "is_external": false,
+      "level_name": "Erdgeschoss",
+      "material": {
+        "kind": "layer_set",
+        "names": [
+          "Leichtbeton 102890359"
+        ],
+        "layer_thicknesses_m": [
+          0.24
+        ]
+      },
+      "bbox_m": {
+        "min_m": [
+          7.41,
+          4.01,
+          0.0
+        ],
+        "max_m": [
+          11.7,
+          4.25,
+          2.5
+        ]
+      }
+    },
+    {
+      "guid": "3PfS__Y_DBAfq5naM6zD2Z",
+      "name": "Wand-Int-ERDG-2",
+      "is_external": false,
+      "level_name": "Erdgeschoss",
+      "material": {
+        "kind": "layer_set",
+        "names": [
+          "Leichtbeton 102890359"
+        ],
+        "layer_thicknesses_m": [
+          0.24
+        ]
+      },
+      "bbox_m": {
+        "min_m": [
+          7.41,
+          4.01,
+          0.0
+        ],
+        "max_m": [
+          7.65,
+          9.7,
+          2.5
+        ]
+      }
+    },
+    {
+      "guid": "2ptk1k7qn8_Qk22vjh$0DE",
+      "name": "Wand-Int-ERDG-1",
+      "is_external": false,
+      "level_name": "Erdgeschoss",
+      "material": {
+        "kind": "layer_set",
+        "names": [
+          "Leichtbeton 102890359"
+        ],
+        "layer_thicknesses_m": [
+          0.24
+        ]
+      },
+      "bbox_m": {
+        "min_m": [
+          3.8,
+          5.99,
+          0.0
+        ],
+        "max_m": [
+          4.04,
+          9.7,
+          2.5
+        ]
+      }
+    },
+    {
+      "guid": "3jjW3rL656ex34Gws22EfM",
+      "name": "Wand-Int-ERDG-3",
+      "is_external": false,
+      "level_name": "Erdgeschoss",
+      "material": {
+        "kind": "layer_set",
+        "names": [
+          "Leichtbeton 102890359"
+        ],
+        "layer_thicknesses_m": [
+          0.24
+        ]
+      },
+      "bbox_m": {
+        "min_m": [
+          0.3,
+          5.75,
+          0.0
+        ],
+        "max_m": [
+          7.41,
+          5.99,
+          2.5
+        ]
+      }
+    },
+    {
+      "guid": "1$wmdwWPjDYuku_ghVkynE",
+      "name": "Wand-Int-ERDG-5",
+      "is_external": false,
+      "level_name": "Erdgeschoss",
+      "material": {
+        "kind": "layer_set",
+        "names": [
+          "Leichtbeton 102890359"
+        ],
+        "layer_thicknesses_m": [
+          0.24
+        ]
+      },
+      "bbox_m": {
+        "min_m": [
+          0.3,
+          4.01,
+          0.0
+        ],
+        "max_m": [
+          3.8,
+          4.25,
+          2.5
+        ]
+      }
+    },
+    {
+      "guid": "3rPX_Juz59peXXY6wDJl18",
+      "name": "Wand-Ext-ERDG-1",
+      "is_external": true,
+      "level_name": "Erdgeschoss",
+      "material": {
+        "kind": "layer_set",
+        "names": [
+          "Leichtbeton 102890359"
+        ],
+        "layer_thicknesses_m": [
+          0.3
+        ]
+      },
+      "bbox_m": {
+        "min_m": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "max_m": [
+          0.3,
+          10.0,
+          2.7
+        ]
+      }
+    },
+    {
+      "guid": "16DNNqzfP2thtfaOflvsKA",
+      "name": "Wand-Ext-ERDG-4",
+      "is_external": true,
+      "level_name": "Erdgeschoss",
+      "material": {
+        "kind": "layer_set",
+        "names": [
+          "Leichtbeton 102890359"
+        ],
+        "layer_thicknesses_m": [
+          0.3
+        ]
+      },
+      "bbox_m": {
+        "min_m": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "max_m": [
+          12.0,
+          0.3,
+          2.7
+        ]
+      }
+    },
+    {
+      "guid": "25fsbPyk15VvuXI$yNKenK",
+      "name": "Wand-Ext-ERDG-3",
+      "is_external": true,
+      "level_name": "Erdgeschoss",
+      "material": {
+        "kind": "layer_set",
+        "names": [
+          "Leichtbeton 102890359"
+        ],
+        "layer_thicknesses_m": [
+          0.3
+        ]
+      },
+      "bbox_m": {
+        "min_m": [
+          11.7,
+          0.0,
+          0.0
+        ],
+        "max_m": [
+          12.0,
+          10.0,
+          2.7
+        ]
+      }
+    },
+    {
+      "guid": "1bzfVsJqn8De5PukCrqylz",
+      "name": "Wand-Ext-ERDG-2",
+      "is_external": true,
+      "level_name": "Erdgeschoss",
+      "material": {
+        "kind": "layer_set",
+        "names": [
+          "Leichtbeton 102890359"
+        ],
+        "layer_thicknesses_m": [
+          0.3
+        ]
+      },
+      "bbox_m": {
+        "min_m": [
+          0.0,
+          9.7,
+          0.0
+        ],
+        "max_m": [
+          12.0,
+          10.0,
+          2.7
+        ]
+      }
+    },
+    {
+      "guid": "0knNIAVBPBFvBy_m5QVHsU",
+      "name": "Wand-Ext-OG-1",
+      "is_external": true,
+      "level_name": "Dachgeschoss",
+      "material": {
+        "kind": "layer_set",
+        "names": [
+          "Leichtbeton 102890359"
+        ],
+        "layer_thicknesses_m": [
+          0.3
+        ]
+      },
+      "bbox_m": {
+        "min_m": [
+          0.0,
+          0.0,
+          2.7
+        ],
+        "max_m": [
+          0.3,
+          10.0,
+          6.08675134594856
+        ]
+      }
+    },
+    {
+      "guid": "25OWQvmXj5BPgyergP43tY",
+      "name": "Wand-Ext-OG-2",
+      "is_external": true,
+      "level_name": "Dachgeschoss",
+      "material": {
+        "kind": "layer_set",
+        "names": [
+          "Leichtbeton 102890359"
+        ],
+        "layer_thicknesses_m": [
+          0.3
+        ]
+      },
+      "bbox_m": {
+        "min_m": [
+          0.0,
+          9.7,
+          2.7
+        ],
+        "max_m": [
+          12.0,
+          10.0,
+          3.373205080756976
+        ]
+      }
+    },
+    {
+      "guid": "3VCarUKgH1buLo22Ozxe6J",
+      "name": "Wand-Ext-OG-3",
+      "is_external": true,
+      "level_name": "Dachgeschoss",
+      "material": {
+        "kind": "layer_set",
+        "names": [
+          "Leichtbeton 102890359"
+        ],
+        "layer_thicknesses_m": [
+          0.3
+        ]
+      },
+      "bbox_m": {
+        "min_m": [
+          11.7,
+          0.0,
+          2.7
+        ],
+        "max_m": [
+          12.0,
+          10.0,
+          6.08675134594856
+        ]
+      }
+    },
+    {
+      "guid": "3Ttjr$59XEWfWN1WUHjelZ",
+      "name": "Wand-Ext-OG-4",
+      "is_external": true,
+      "level_name": "Dachgeschoss",
+      "material": {
+        "kind": "layer_set",
+        "names": [
+          "Leichtbeton 102890359"
+        ],
+        "layer_thicknesses_m": [
+          0.3
+        ]
+      },
+      "bbox_m": {
+        "min_m": [
+          0.0,
+          0.0,
+          2.7
+        ],
+        "max_m": [
+          12.0,
+          0.3,
+          3.373205080756976
+        ]
+      }
+    }
+  ],
+  "windows": [
+    {
+      "guid": "1srAI$R4T8ihLXSNHmUSET",
+      "name": "EG-Fenster-6",
+      "kind": "window",
+      "host_wall_guid": "3rPX_Juz59peXXY6wDJl18",
+      "level_name": "Erdgeschoss",
+      "bbox_m": {
+        "min_m": [
+          0.12,
+          6.495,
+          0.8
+        ],
+        "max_m": [
+          0.195,
+          8.495000000000001,
+          2.0
+        ]
+      }
+    },
+    {
+      "guid": "0B1RwEzzP3CfME5NR$Vqh5",
+      "name": "EG-Fenster-7",
+      "kind": "window",
+      "host_wall_guid": "3rPX_Juz59peXXY6wDJl18",
+      "level_name": "Erdgeschoss",
+      "bbox_m": {
+        "min_m": [
+          0.12,
+          1.205,
+          0.95
+        ],
+        "max_m": [
+          0.195,
+          3.205,
+          2.15
+        ]
+      }
+    },
+    {
+      "guid": "25nJxEpYf8LRDJNkMUVO0m",
+      "name": "EG-Fenster-4",
+      "kind": "window",
+      "host_wall_guid": "16DNNqzfP2thtfaOflvsKA",
+      "level_name": "Erdgeschoss",
+      "bbox_m": {
+        "min_m": [
+          1.7899999999999991,
+          0.12,
+          0.95
+        ],
+        "max_m": [
+          3.789999999999999,
+          0.195,
+          2.15
+        ]
+      }
+    },
+    {
+      "guid": "3BFcylCsX74PQAoRAe5fNv",
+      "name": "EG-Fenster-5",
+      "kind": "window",
+      "host_wall_guid": "16DNNqzfP2thtfaOflvsKA",
+      "level_name": "Erdgeschoss",
+      "bbox_m": {
+        "min_m": [
+          8.21,
+          0.12,
+          0.8
+        ],
+        "max_m": [
+          10.21,
+          0.195,
+          2.0
+        ]
+      }
+    },
+    {
+      "guid": "13aSY79zb8fP4HApEJ0z_e",
+      "name": "EG-Fenster-8",
+      "kind": "window",
+      "host_wall_guid": "25fsbPyk15VvuXI$yNKenK",
+      "level_name": "Erdgeschoss",
+      "bbox_m": {
+        "min_m": [
+          11.805000000000001,
+          6.50239371534,
+          0.8
+        ],
+        "max_m": [
+          11.88,
+          8.50239371534,
+          2.0
+        ]
+      }
+    },
+    {
+      "guid": "2EQh_jhP1B_A_AMuSJc5E0",
+      "name": "EG-Fenster-9",
+      "kind": "window",
+      "host_wall_guid": "25fsbPyk15VvuXI$yNKenK",
+      "level_name": "Erdgeschoss",
+      "bbox_m": {
+        "min_m": [
+          11.805000000000001,
+          1.205,
+          0.8
+        ],
+        "max_m": [
+          11.88,
+          3.205,
+          2.0
+        ]
+      }
+    },
+    {
+      "guid": "1TAI4ouKX4Xx4lBDZIu5qM",
+      "name": "EG-Fenster-1",
+      "kind": "window",
+      "host_wall_guid": "1bzfVsJqn8De5PukCrqylz",
+      "level_name": "Erdgeschoss",
+      "bbox_m": {
+        "min_m": [
+          1.0499999999999998,
+          9.805000000000001,
+          0.8
+        ],
+        "max_m": [
+          3.05,
+          9.88,
+          2.0
+        ]
+      }
+    },
+    {
+      "guid": "2Q9w7oRXP249jBobEMVqlZ",
+      "name": "EG-Fenster-2",
+      "kind": "window",
+      "host_wall_guid": "1bzfVsJqn8De5PukCrqylz",
+      "level_name": "Erdgeschoss",
+      "bbox_m": {
+        "min_m": [
+          4.66,
+          9.805000000000001,
+          0.8
+        ],
+        "max_m": [
+          6.66,
+          9.88,
+          2.0
+        ]
+      }
+    },
+    {
+      "guid": "1DiYqhfzH9xxuJdVHwXCNa",
+      "name": "EG-Fenster-3",
+      "kind": "window",
+      "host_wall_guid": "1bzfVsJqn8De5PukCrqylz",
+      "level_name": "Erdgeschoss",
+      "bbox_m": {
+        "min_m": [
+          8.795,
+          9.805000000000001,
+          0.8
+        ],
+        "max_m": [
+          10.795,
+          9.88,
+          2.0
+        ]
+      }
+    },
+    {
+      "guid": "1zOBw0Gej5Wf0QAJfHnOc0",
+      "name": "OG-Fenster-2",
+      "kind": "window",
+      "host_wall_guid": "0knNIAVBPBFvBy_m5QVHsU",
+      "level_name": "Dachgeschoss",
+      "bbox_m": {
+        "min_m": [
+          0.095,
+          4.5,
+          3.5
+        ],
+        "max_m": [
+          0.185,
+          5.5,
+          4.5
+        ]
+      }
+    },
+    {
+      "guid": "2ACmFFQhT1Ouf0x4YRUh9m",
+      "name": "OG-Fenster-1",
+      "kind": "window",
+      "host_wall_guid": "3VCarUKgH1buLo22Ozxe6J",
+      "level_name": "Dachgeschoss",
+      "bbox_m": {
+        "min_m": [
+          11.795,
+          4.5,
+          3.5
+        ],
+        "max_m": [
+          11.885,
+          5.5,
+          4.5
+        ]
+      }
+    }
+  ],
+  "doors": [
+    {
+      "guid": "1Oms875aH3Wg$9l65H2ZGw",
+      "name": "Innentuer-1",
+      "kind": "door",
+      "host_wall_guid": "3PfS__Y_DBAfq5naM6zD2Z",
+      "level_name": "Erdgeschoss",
+      "bbox_m": {
+        "min_m": [
+          7.41,
+          4.5575,
+          0.0
+        ],
+        "max_m": [
+          7.51,
+          5.4425,
+          2.01
+        ]
+      }
+    },
+    {
+      "guid": "0pGAjlJMP3ifYPATVF5xAR",
+      "name": "Innentuer-2",
+      "kind": "door",
+      "host_wall_guid": "3jjW3rL656ex34Gws22EfM",
+      "level_name": "Erdgeschoss",
+      "bbox_m": {
+        "min_m": [
+          5.2175,
+          5.75,
+          0.0
+        ],
+        "max_m": [
+          6.1025,
+          5.85,
+          2.01
+        ]
+      }
+    },
+    {
+      "guid": "2qiPPF3FrF8OIqfrKiSUqm",
+      "name": "Innentuer-3",
+      "kind": "door",
+      "host_wall_guid": "3jjW3rL656ex34Gws22EfM",
+      "level_name": "Erdgeschoss",
+      "bbox_m": {
+        "min_m": [
+          1.6075,
+          5.75,
+          0.0
+        ],
+        "max_m": [
+          2.4924999999999997,
+          5.85,
+          2.01
+        ]
+      }
+    },
+    {
+      "guid": "2jTRqchjf7oB0yhQ6462T0",
+      "name": "Haustuer",
+      "kind": "door",
+      "host_wall_guid": "3rPX_Juz59peXXY6wDJl18",
+      "level_name": "Erdgeschoss",
+      "bbox_m": {
+        "min_m": [
+          0.16,
+          4.495,
+          0.0
+        ],
+        "max_m": [
+          0.35,
+          5.505,
+          2.01
+        ]
+      }
+    },
+    {
+      "guid": "1M$gxUrX1Fiwe3P64ww7U5",
+      "name": "Terrassentuer",
+      "kind": "door",
+      "host_wall_guid": "16DNNqzfP2thtfaOflvsKA",
+      "level_name": "Erdgeschoss",
+      "bbox_m": {
+        "min_m": [
+          4.995,
+          0.12,
+          0.0
+        ],
+        "max_m": [
+          7.005,
+          0.325,
+          2.375
+        ]
+      }
+    }
+  ],
+  "roofs": [
+    {
+      "guid": "07Enbsqm9C7AQC9iyBwfSD",
+      "name": "Dach-1",
+      "level_name": "Dachgeschoss",
+      "material": {
+        "kind": "layer_set",
+        "names": [
+          "Solid 397409098"
+        ],
+        "layer_thicknesses_m": [
+          0.2
+        ]
+      },
+      "bbox_m": {
+        "min_m": [
+          -0.5,
+          4.999999999997392,
+          2.9113248654048904
+        ],
+        "max_m": [
+          12.5,
+          10.500000000000261,
+          6.317691453627097
+        ]
+      }
+    },
+    {
+      "guid": "2IxUUNUVPB6Ob$eicCfP2N",
+      "name": "Dach-2",
+      "level_name": "Dachgeschoss",
+      "material": {
+        "kind": "layer_set",
+        "names": [
+          "Solid 397409098"
+        ],
+        "layer_thicknesses_m": [
+          0.2
+        ]
+      },
+      "bbox_m": {
+        "min_m": [
+          -0.5,
+          -0.5000000000002608,
+          2.9113248654048904
+        ],
+        "max_m": [
+          12.5,
+          5.000000000002608,
+          6.317691453627097
+        ]
+      }
+    }
+  ]
+}

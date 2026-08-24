@@ -14,7 +14,7 @@ dependencies = [
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["gridsim_core*", "gridsim_sensors*", "gridsim_estimation*"]
+include = ["gridsim_core*", "gridsim_sensors*", "gridsim_estimation*", "gridsim_ifc*"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

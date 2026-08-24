@@ -29,7 +29,6 @@ setup(
             "distance_sensor = gridsim_ros.distance_sensor_node:main",
             "imu_sim = gridsim_ros.imu_sim_node:main",
             "wall_estimator = gridsim_ros.wall_estimator_node:main",
-            "gocator_pointcloud = gridsim_ros.gocator_pointcloud_node:main",
         ],
     },
 )

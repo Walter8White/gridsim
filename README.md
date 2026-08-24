@@ -133,22 +133,13 @@ Run the tests:
 pytest
 ```
 
-## ROS 2 and Isaac Sim
+## ROS 2
 
 Isaac Sim is installed separately from this repository. Keep Isaac-specific
 extensions in its managed Python environment and use ROS 2 topics as the
 boundary to the platform-independent `gridsim` packages.
 
-Do not activate Conda while running ROS 2 or Isaac Sim. For the verified local
-source build, launch Isaac Sim in one terminal:
-
-```bash
-conda deactivate 2>/dev/null || true
-source /opt/ros/jazzy/setup.bash
-~/isaacsim/_build/linux-x86_64/release/isaac-sim.sh
-```
-
-Launch the project ROS nodes in another terminal:
+Do not activate Conda while running ROS 2. Launch the project ROS nodes with:
 
 ```bash
 cd ~/deploya/gridsim
@@ -158,23 +149,36 @@ source install/setup.bash
 ros2 launch gridsim_ros mvp_sim.launch.py
 ```
 
-Both processes must use the same `ROS_DOMAIN_ID`. The initial integration will
-connect Isaac Sim RTX LiDAR and IMU publishers to `gridsim_ros`, followed by
-encoder and distance-sensor topics.
+The Isaac utilities that remain in this repository are limited to facade asset
+visualization. See [`isaac/`](isaac/README.md).
 
-The first config-driven scene is available in [`isaac/`](isaac/README.md). Run a
-bounded headless smoke test with:
+### IFC facade import
 
-```bash
-source /opt/ros/jazzy/setup.bash
-./isaac/run_mvp.sh --headless --test --no-lidar
-```
+`src/gridsim_ifc` extracts walls, windows, doors, levels, materials, and units from an IFC
+building model via IfcOpenShell, and can convert the same geometry to a visual USD asset for
+Isaac. This spans two of the environments above plus the standalone `.venv`:
+
+- **Extraction only** (`gridsim_ifc.extract_ifc`, no `pxr` needed) runs in the standalone
+  `.venv` — `ifcopenshell` is in `requirements.txt`, so `pytest tests/test_ifc_extract.py` works
+  out of the box.
+- **USD conversion** (`gridsim_ifc.usd_export.build_ifc_usd`) additionally needs `pxr`
+  (`usd-core`), so per-asset `convert_*.py` scripts (e.g.
+  `assets/facades/fzk_haus/convert_fzk_haus.py`) run in the conda `base` environment, same as
+  the CAD sensor converters under `assets/cad/sensors/*/convert_*.py`:
+
+  ```bash
+  conda run -n base python assets/facades/fzk_haus/convert_fzk_haus.py
+  ```
+
+- **Visualizing in Isaac**: `./isaac/view_ifc_facade.sh` references the converted `.usd` (see
+  `assets/facades/fzk_haus/README.md` for the full walkthrough on the bundled FZK-Haus sample).
 
 ## Architecture
 
 - `src/gridsim_core`: coordinate transforms and physical state containers
 - `src/gridsim_sensors`: deterministic, seeded sensor noise models
 - `src/gridsim_estimation`: odometry, calibration, and stability placeholders
+- `src/gridsim_ifc`: IFC building model extraction (IfcOpenShell) and USD conversion
 - `src/gridsim_ros`: ROS 2 package, nodes, and launch description
 - `configs`: scenario, geometry, and sensor parameters
 - `assets`: future USD and source assets
