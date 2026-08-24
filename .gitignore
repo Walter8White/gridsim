@@ -29,6 +29,8 @@ _build/
 # Editors and operating systems
 .idea/
 .vscode/
+xcuserdata/
+*.xcuserstate
 *.swp
 .DS_Store
 

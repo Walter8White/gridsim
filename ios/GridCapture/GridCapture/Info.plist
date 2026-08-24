@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<true/>
+	<key>NSCameraUsageDescription</key>
+	<string>GridCapture uses the camera to photograph the facade at each Zaber position.</string>
+	<key>NSMotionUsageDescription</key>
+	<string>GridCapture records device motion with each facade photograph.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>GridCapture connects to the Linux workstation controlling the Zaber stage.</string>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
+	<key>UIFileSharingEnabled</key>
+	<true/>
+</dict>
+</plist>
