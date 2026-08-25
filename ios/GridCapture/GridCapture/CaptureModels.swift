@@ -31,6 +31,13 @@ struct CaptureResultMessage: Codable, Sendable {
     let photoFilename: String?
     let captureCompletedAt: Date?
     let error: String?
+
+    enum CodingKeys: String, CodingKey {
+        case type, success, error
+        case captureID = "capture_id"
+        case photoFilename = "photo_filename"
+        case captureCompletedAt = "capture_completed_at"
+    }
 }
 
 struct CaptureRecord: Codable, Sendable {

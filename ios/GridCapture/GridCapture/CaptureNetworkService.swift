@@ -68,7 +68,6 @@ final class CaptureNetworkService: ObservableObject {
         Task {
             do {
                 let encoder = JSONEncoder()
-                encoder.keyEncodingStrategy = .convertToSnakeCase
                 encoder.dateEncodingStrategy = .iso8601
                 let data = try encoder.encode(response)
                 guard let text = String(data: data, encoding: .utf8) else { return }
@@ -102,9 +101,7 @@ final class CaptureNetworkService: ObservableObject {
     }
 
     private func handle(_ data: Data) throws {
-        let decoder = JSONDecoder()
-        decoder.keyDecodingStrategy = .convertFromSnakeCase
-        let wire = try decoder.decode(IncomingMessage.self, from: data)
+        let wire = try JSONDecoder().decode(IncomingMessage.self, from: data)
         switch wire.type {
         case "hello":
             state = .connected
@@ -143,6 +140,13 @@ private struct IncomingMessage: Decodable {
     let captureID: String?
     let targetPositionMM: Double?
     let measuredPositionMM: Double?
+
+    enum CodingKeys: String, CodingKey {
+        case type
+        case captureID = "capture_id"
+        case targetPositionMM = "target_position_mm"
+        case measuredPositionMM = "measured_position_mm"
+    }
 }
 
 private enum NetworkError: LocalizedError {
