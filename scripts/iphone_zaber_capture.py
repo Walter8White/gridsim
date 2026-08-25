@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import signal
 import sys
@@ -30,7 +31,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--end-mm", type=float, required=True)
     parser.add_argument("--step-mm", type=float, required=True)
     parser.add_argument("--settle-s", type=float, default=0.25)
-    parser.add_argument("--capture-timeout-s", type=float, default=30.0)
+    parser.add_argument("--capture-timeout-s", type=float, default=60.0)
     parser.add_argument("--max-captures", type=int, default=1000)
     parser.add_argument(
         "--dry-run",
@@ -112,17 +113,76 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-async def receive_capture_result(websocket: Any, capture_id: str, timeout_s: float) -> dict[str, Any]:
+def safe_filename(value: Any, expected_suffix: str) -> str:
+    if not isinstance(value, str) or not value or Path(value).name != value:
+        raise RuntimeError(f"Unsafe upload filename: {value!r}")
+    if Path(value).suffix.lower() != expected_suffix:
+        raise RuntimeError(f"Unexpected upload extension: {value!r}")
+    return value
+
+
+def validate_payload(data: Any, expected_size: Any, expected_hash: Any, label: str) -> bytes:
+    if not isinstance(data, bytes):
+        raise RuntimeError(f"Expected binary {label} payload")
+    if not isinstance(expected_size, int) or expected_size < 0 or len(data) != expected_size:
+        raise RuntimeError(
+            f"{label} size mismatch: expected {expected_size}, received {len(data)}"
+        )
+    digest = hashlib.sha256(data).hexdigest()
+    if not isinstance(expected_hash, str) or digest != expected_hash.lower():
+        raise RuntimeError(f"{label} SHA-256 mismatch")
+    return data
+
+
+def write_atomic(path: Path, data: bytes) -> None:
+    temporary = path.with_suffix(path.suffix + ".part")
+    temporary.write_bytes(data)
+    temporary.replace(path)
+
+
+async def receive_capture_result(
+    websocket: Any,
+    capture_id: str,
+    timeout_s: float,
+    session_dir: Path,
+) -> dict[str, Any]:
+    upload_received = False
     async with asyncio.timeout(timeout_s):
         while True:
             raw = await websocket.recv()
+            if isinstance(raw, bytes):
+                raise RuntimeError("Received binary payload without an upload header")
             message = json.loads(raw)
-            if message.get("type") != "capture_result":
+            message_type = message.get("type")
+            if message_type == "capture_upload_start":
+                if message.get("capture_id") != capture_id:
+                    raise RuntimeError("Upload capture_id does not match the active capture")
+                photo_filename = safe_filename(message.get("photo_filename"), ".jpg")
+                metadata_filename = safe_filename(message.get("metadata_filename"), ".json")
+                photo = validate_payload(
+                    await websocket.recv(),
+                    message.get("photo_size"),
+                    message.get("photo_sha256"),
+                    "photo",
+                )
+                metadata = validate_payload(
+                    await websocket.recv(),
+                    message.get("metadata_size"),
+                    message.get("metadata_sha256"),
+                    "metadata",
+                )
+                write_atomic(session_dir / "images" / photo_filename, photo)
+                write_atomic(session_dir / "metadata" / metadata_filename, metadata)
+                upload_received = True
+                continue
+            if message_type != "capture_result":
                 continue
             if message.get("capture_id") != capture_id:
                 raise RuntimeError(
                     f"Capture response ID mismatch: expected {capture_id}, got {message.get('capture_id')}"
                 )
+            if message.get("success") and not upload_received:
+                raise RuntimeError("iPhone reported success without uploading capture files")
             return message
 
 
@@ -131,8 +191,11 @@ async def run_session(websocket: Any, args: argparse.Namespace) -> None:
     stage = None if args.dry_run else ZaberStage(args.zaber_port, args.velocity_mm_s)
     loop = asyncio.get_running_loop()
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    session_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    log_path = args.output_dir / f"session_{session_id}.jsonl"
+    session_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    session_dir = args.output_dir / f"session_{session_id}"
+    (session_dir / "images").mkdir(parents=True, exist_ok=False)
+    (session_dir / "metadata").mkdir()
+    log_path = session_dir / "manifest.jsonl"
 
     try:
         if stage is None:
@@ -176,7 +239,7 @@ async def run_session(websocket: Any, args: argparse.Namespace) -> None:
                 )
                 await websocket.send(json.dumps(command))
                 result = await receive_capture_result(
-                    websocket, capture_id, args.capture_timeout_s
+                    websocket, capture_id, args.capture_timeout_s, session_dir
                 )
                 record = {**command, "iphone_result": result, "ack_received_at": utc_now()}
                 log_file.write(json.dumps(record, sort_keys=True) + "\n")
@@ -185,7 +248,7 @@ async def run_session(websocket: Any, args: argparse.Namespace) -> None:
                     raise RuntimeError(
                         f"iPhone capture failed at {measured_mm:.6f} mm: {result.get('error')}"
                     )
-                print(f"  saved_on_iphone={result.get('photo_filename')}")
+                print(f"  received_on_linux={result.get('photo_filename')}")
 
         await websocket.send(json.dumps({"type": "scan_complete", "captures": len(scan_positions)}))
         print("Scan complete.")
@@ -223,7 +286,13 @@ async def async_main(args: argparse.Namespace) -> None:
     for sig in (signal.SIGINT, signal.SIGTERM):
         asyncio.get_running_loop().add_signal_handler(sig, lambda: stop.cancel())
 
-    async with websockets.serve(handle_client, args.host, args.port, ping_interval=20):
+    async with websockets.serve(
+        handle_client,
+        args.host,
+        args.port,
+        ping_interval=20,
+        max_size=100 * 1024 * 1024,
+    ):
         print(f"Waiting for GridCapture on ws://{args.host}:{args.port}")
         try:
             await stop

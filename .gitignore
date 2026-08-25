@@ -40,6 +40,7 @@ xcuserdata/
 *.mcap
 outputs/
 recordings/
+captures/iphone_zaber/
 
 # KEYENCE LJ-S local build outputs and captures
 keyence_ljs8000/CPP/captures/

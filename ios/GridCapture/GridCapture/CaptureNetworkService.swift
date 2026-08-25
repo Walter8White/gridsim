@@ -1,4 +1,5 @@
 import Combine
+import CryptoKit
 import Foundation
 
 @MainActor
@@ -42,41 +43,88 @@ final class CaptureNetworkService: ObservableObject {
     }
 
     func send(result: Result<CaptureRecord, Error>, captureID: String) {
-        let response: CaptureResultMessage
-        switch result {
-        case .success(let record):
-            response = CaptureResultMessage(
-                type: "capture_result",
-                captureID: captureID,
-                success: true,
-                photoFilename: record.photoFilename,
-                captureCompletedAt: record.captureCompletedAt,
-                error: nil
-            )
-        case .failure(let error):
-            response = CaptureResultMessage(
-                type: "capture_result",
-                captureID: captureID,
-                success: false,
-                photoFilename: nil,
-                captureCompletedAt: nil,
-                error: error.localizedDescription
-            )
-        }
-
         guard let socket else { return }
         Task {
             do {
-                let encoder = JSONEncoder()
-                encoder.dateEncodingStrategy = .iso8601
-                let data = try encoder.encode(response)
-                guard let text = String(data: data, encoding: .utf8) else { return }
-                try await socket.send(.string(text))
+                switch result {
+                case .success(let record):
+                    try await upload(record: record, using: socket)
+                    try await sendResponse(
+                        CaptureResultMessage(
+                            type: "capture_result",
+                            captureID: captureID,
+                            success: true,
+                            photoFilename: record.photoFilename,
+                            captureCompletedAt: record.captureCompletedAt,
+                            error: nil
+                        ),
+                        using: socket
+                    )
+                    message = "Uploaded \(record.photoFilename)"
+                case .failure(let error):
+                    try await sendResponse(
+                        CaptureResultMessage(
+                            type: "capture_result",
+                            captureID: captureID,
+                            success: false,
+                            photoFilename: nil,
+                            captureCompletedAt: nil,
+                            error: error.localizedDescription
+                        ),
+                        using: socket
+                    )
+                }
             } catch {
+                try? await sendResponse(
+                    CaptureResultMessage(
+                        type: "capture_result",
+                        captureID: captureID,
+                        success: false,
+                        photoFilename: nil,
+                        captureCompletedAt: nil,
+                        error: "Upload failed: \(error.localizedDescription)"
+                    ),
+                    using: socket
+                )
                 state = .failed
-                message = error.localizedDescription
+                message = "Upload failed: \(error.localizedDescription)"
             }
         }
+    }
+
+    private func upload(record: CaptureRecord, using socket: URLSessionWebSocketTask) async throws {
+        let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let directory = documents.appendingPathComponent("Captures", isDirectory: true)
+        let photo = try Data(contentsOf: directory.appendingPathComponent(record.photoFilename))
+        let metadata = try Data(contentsOf: directory.appendingPathComponent(record.metadataFilename))
+        let header = CaptureUploadStartMessage(
+            type: "capture_upload_start",
+            captureID: record.captureID,
+            photoFilename: record.photoFilename,
+            photoSize: photo.count,
+            photoSHA256: SHA256.hash(data: photo).hexString,
+            metadataFilename: record.metadataFilename,
+            metadataSize: metadata.count,
+            metadataSHA256: SHA256.hash(data: metadata).hexString
+        )
+        let headerData = try JSONEncoder().encode(header)
+        guard let headerText = String(data: headerData, encoding: .utf8) else {
+            throw UploadError.invalidHeader
+        }
+        try await socket.send(.string(headerText))
+        try await socket.send(.data(photo))
+        try await socket.send(.data(metadata))
+    }
+
+    private func sendResponse(
+        _ response: CaptureResultMessage,
+        using socket: URLSessionWebSocketTask
+    ) async throws {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let data = try encoder.encode(response)
+        guard let text = String(data: data, encoding: .utf8) else { throw UploadError.invalidHeader }
+        try await socket.send(.string(text))
     }
 
     private func receiveLoop(socket: URLSessionWebSocketTask) async {
@@ -152,4 +200,13 @@ private struct IncomingMessage: Decodable {
 private enum NetworkError: LocalizedError {
     case missingCaptureID
     var errorDescription: String? { "Capture command has no capture_id." }
+}
+
+private enum UploadError: LocalizedError {
+    case invalidHeader
+    var errorDescription: String? { "Could not encode the upload header." }
+}
+
+private extension SHA256.Digest {
+    var hexString: String { map { String(format: "%02x", $0) }.joined() }
 }

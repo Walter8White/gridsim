@@ -31,7 +31,8 @@ python3 scripts/iphone_zaber_capture.py \
 
 Then open GridCapture, enter the Linux IP, press **Connect**, and approve the
 local-network permission. Three captures should be saved with simulated
-positions 0, 1, and 2 mm.
+positions 0, 1, and 2 mm. Each JPEG and JSON file is transferred to Linux and
+verified with SHA-256 before the stage is allowed to continue.
 
 ## First real test
 
@@ -58,6 +59,14 @@ python3 scripts/iphone_zaber_capture.py \
 ```
 
 The script never homes the stage. Press `Ctrl-C` to stop the server. Zaber
-device limits remain authoritative. Linux writes a JSONL audit log under
-`captures/iphone_zaber/`; the JPEG and per-photo JSON remain under
-`On My iPhone/GridCapture/Captures`.
+device limits remain authoritative. Linux creates one directory per session:
+
+```text
+captures/iphone_zaber/session_<timestamp>/
+├── images/
+├── metadata/
+└── manifest.jsonl
+```
+
+The JPEG and per-photo JSON also remain under
+`On My iPhone/GridCapture/Captures` as a local backup.

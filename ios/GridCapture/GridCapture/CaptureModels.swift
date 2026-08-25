@@ -40,11 +40,34 @@ struct CaptureResultMessage: Codable, Sendable {
     }
 }
 
+struct CaptureUploadStartMessage: Codable, Sendable {
+    let type: String
+    let captureID: String
+    let photoFilename: String
+    let photoSize: Int
+    let photoSHA256: String
+    let metadataFilename: String
+    let metadataSize: Int
+    let metadataSHA256: String
+
+    enum CodingKeys: String, CodingKey {
+        case type
+        case captureID = "capture_id"
+        case photoFilename = "photo_filename"
+        case photoSize = "photo_size"
+        case photoSHA256 = "photo_sha256"
+        case metadataFilename = "metadata_filename"
+        case metadataSize = "metadata_size"
+        case metadataSHA256 = "metadata_sha256"
+    }
+}
+
 struct CaptureRecord: Codable, Sendable {
     let captureID: String
     let targetPositionMM: Double?
     let measuredPositionMM: Double?
     let photoFilename: String
+    let metadataFilename: String
     let commandReceivedAt: Date?
     let captureCompletedAt: Date
     let motion: MotionSample

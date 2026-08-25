@@ -122,6 +122,7 @@ final class CameraService: NSObject, ObservableObject {
         let directory = try captureDirectory()
         let safeID = command.captureID.replacingOccurrences(of: "/", with: "-")
         let photoFilename = "\(safeID).jpg"
+        let metadataFilename = "\(safeID).json"
         try data.write(to: directory.appendingPathComponent(photoFilename), options: .atomic)
 
         let record = CaptureRecord(
@@ -129,6 +130,7 @@ final class CameraService: NSObject, ObservableObject {
             targetPositionMM: command.targetPositionMM,
             measuredPositionMM: command.measuredPositionMM,
             photoFilename: photoFilename,
+            metadataFilename: metadataFilename,
             commandReceivedAt: command.receivedAt,
             captureCompletedAt: Date(),
             motion: motion
@@ -137,7 +139,7 @@ final class CameraService: NSObject, ObservableObject {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
         try encoder.encode(record).write(
-            to: directory.appendingPathComponent("\(safeID).json"),
+            to: directory.appendingPathComponent(metadataFilename),
             options: .atomic
         )
         return record
