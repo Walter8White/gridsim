@@ -10,6 +10,7 @@ htmlcov/
 
 # Local environments
 .venv/
+.venv_pix4d/
 venv/
 .env
 
@@ -41,6 +42,8 @@ xcuserdata/
 outputs/
 recordings/
 captures/iphone_zaber/
+pix4d_outputs/
+processing_results_*/
 
 # KEYENCE LJ-S local build outputs and captures
 keyence_ljs8000/CPP/captures/
@@ -49,3 +52,7 @@ keyence_ljs8000/CPP/bin/main
 keyence_ljs8000/CPP/bin/check_status
 keyence_ljs8000/CPP/bin/keyence_cmd
 keyence_ljs8000/CPP/bin/keyence_setting
+
+# Proprietary/local SDK drops
+PIX4D SDK ENGINE/
+*.whl
