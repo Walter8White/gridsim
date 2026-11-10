@@ -14,6 +14,7 @@ import laspy
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.backends.backend_pdf import PdfPages
+from PIL import Image
 from scipy.spatial import ConvexHull, cKDTree
 
 
@@ -39,6 +40,30 @@ def parse_args() -> argparse.Namespace:
         help="Maximum number of points used for plots and nearest-neighbor metrics.",
     )
     parser.add_argument("--seed", type=int, default=7, help="Random seed for point sampling.")
+    parser.add_argument("--expected-width-m", type=float, default=None)
+    parser.add_argument("--expected-height-m", type=float, default=None)
+    parser.add_argument("--wall-distance-m", type=float, default=None)
+    parser.add_argument(
+        "--camera-35mm-equivalent-mm",
+        type=float,
+        default=24.0,
+        help=(
+            "35 mm equivalent focal length used to infer the phone FOV from the "
+            "physical focal length when metadata does not include sensor size."
+        ),
+    )
+    parser.add_argument(
+        "--surface-description",
+        default=(
+            "Plaster wall, highly featureless, with very low-amplitude surface texture "
+            "and protrusions of only a few millimetres."
+        ),
+    )
+    parser.add_argument(
+        "--enhancement-description",
+        default=None,
+        help="Description of image preprocessing used before Pix4D.",
+    )
     return parser.parse_args()
 
 
@@ -135,12 +160,73 @@ def residual_stats(signed_distances: np.ndarray) -> dict[str, float]:
     mm = signed_distances * 1000.0
     return {
         "mean_mm": float(np.mean(mm)),
+        "std_mm": float(np.std(mm)),
         "median_abs_mm": float(np.median(np.abs(mm))),
         "rms_mm": float(math.sqrt(np.mean(mm**2))),
         "p90_abs_mm": float(np.percentile(np.abs(mm), 90)),
         "p95_abs_mm": float(np.percentile(np.abs(mm), 95)),
         "max_abs_mm": float(np.max(np.abs(mm))),
     }
+
+
+def depth_distribution_stats(signed_distances: np.ndarray) -> dict[str, float]:
+    residual_mm = (signed_distances - np.median(signed_distances)) * 1000.0
+    mu = float(np.mean(residual_mm))
+    sigma = float(np.std(residual_mm))
+    return {
+        "median_plane_offset_mm": float(np.median(signed_distances) * 1000.0),
+        "gaussian_mu_mm": mu,
+        "gaussian_sigma_mm": sigma,
+        "one_sigma_interval_mm": [mu - sigma, mu + sigma],
+        "two_sigma_interval_mm": [mu - 2.0 * sigma, mu + 2.0 * sigma],
+        "three_sigma_interval_mm": [mu - 3.0 * sigma, mu + 3.0 * sigma],
+    }
+
+
+def add_fov_expected_coverage(metrics: dict, equivalent_35mm_mm: float) -> None:
+    wall_distance = metrics.get("wall_distance_hint_m") or metrics.get("wall_distance_m_user")
+    focal_mm = metrics.get("camera_focal_length_mm")
+    image_width_px = metrics.get("source_image_width_px") or metrics.get("processed_image_width_px")
+    image_height_px = metrics.get("source_image_height_px") or metrics.get("processed_image_height_px")
+    path_width = metrics.get("expected_width_m")
+    path_height = metrics.get("expected_height_m")
+    if not all([wall_distance, focal_mm, image_width_px, image_height_px, path_width, path_height]):
+        return
+
+    # Metadata gives the physical focal length, but not the active sensor size.
+    # We infer the active sensor width from the wide-camera 35 mm equivalent.
+    sensor_width_mm = 36.0 * float(focal_mm) / equivalent_35mm_mm
+    sensor_height_mm = sensor_width_mm * float(image_height_px) / float(image_width_px)
+    hfov_rad = 2.0 * math.atan(sensor_width_mm / (2.0 * float(focal_mm)))
+    vfov_rad = 2.0 * math.atan(sensor_height_mm / (2.0 * float(focal_mm)))
+    single_frame_width_m = 2.0 * float(wall_distance) * math.tan(hfov_rad / 2.0)
+    single_frame_height_m = 2.0 * float(wall_distance) * math.tan(vfov_rad / 2.0)
+    expected_wall_width_m = float(path_width) + single_frame_width_m
+    expected_wall_height_m = float(path_height) + single_frame_height_m
+    expected_area_m2 = expected_wall_width_m * expected_wall_height_m
+    reconstructed_area_m2 = metrics.get("projected_area_m2")
+
+    metrics.update(
+        {
+            "camera_35mm_equivalent_mm": equivalent_35mm_mm,
+            "inferred_sensor_width_mm": sensor_width_mm,
+            "inferred_sensor_height_mm": sensor_height_mm,
+            "camera_horizontal_fov_deg": math.degrees(hfov_rad),
+            "camera_vertical_fov_deg": math.degrees(vfov_rad),
+            "single_frame_wall_width_m": single_frame_width_m,
+            "single_frame_wall_height_m": single_frame_height_m,
+            "scan_path_width_m": float(path_width),
+            "scan_path_height_m": float(path_height),
+            "expected_wall_width_m": expected_wall_width_m,
+            "expected_wall_height_m": expected_wall_height_m,
+            "expected_wall_area_m2": expected_area_m2,
+            "surface_reconstruction_ratio": (
+                float(reconstructed_area_m2) / expected_area_m2
+                if reconstructed_area_m2 and expected_area_m2 > 0
+                else None
+            ),
+        }
+    )
 
 
 def read_manifest(session_dir: Path | None) -> dict:
@@ -170,7 +256,7 @@ def read_manifest(session_dir: Path | None) -> dict:
 
 
 def autodetect_session_dir(las_path: Path) -> Path | None:
-    match = re.search(r"(session_\d+T\d+Z(?:_multipass)?)", str(las_path))
+    match = re.search(r"(session_\d+T\d+Z(?:_multipass)?(?:_[A-Za-z0-9]+(?:_[A-Za-z0-9]+)*)?)", str(las_path))
     if not match:
         return None
     candidate = Path("captures/iphone_zaber") / match.group(1)
@@ -194,6 +280,63 @@ def read_pose_hints(output_dir: Path) -> dict:
         "pose_sources": pose_sources,
         "wall_distance_hint_m": float(np.median(wall_distances)) if wall_distances else None,
     }
+
+
+def read_image_metadata(session_dir: Path | None) -> dict:
+    if session_dir is None:
+        return {}
+    image_paths = sorted((session_dir / "images").glob("*.jpg"))
+    metadata_paths = sorted((session_dir / "metadata").glob("*.json"))
+    result = {}
+    if image_paths:
+        with Image.open(image_paths[0]) as image:
+            width, height = image.size
+        result.update(
+            {
+                "processed_image_width_px": width,
+                "processed_image_height_px": height,
+                "processed_image_megapixels": width * height / 1_000_000.0,
+            }
+        )
+    camera_records = []
+    for path in metadata_paths:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            continue
+        camera = data.get("camera")
+        if isinstance(camera, dict):
+            camera_records.append(camera)
+    if camera_records:
+        first = camera_records[0]
+        result.update(
+            {
+                "source_image_width_px": first.get("image_width"),
+                "source_image_height_px": first.get("image_height"),
+                "source_image_megapixels": (
+                    first.get("image_width") * first.get("image_height") / 1_000_000.0
+                    if first.get("image_width") and first.get("image_height")
+                    else None
+                ),
+                "camera_device_type": first.get("camera_device_type"),
+                "selected_camera": first.get("selected_camera"),
+                "camera_codec": first.get("codec"),
+                "camera_focal_length_mm": first.get("focal_length"),
+                "camera_aperture": first.get("aperture"),
+                "focus_mode": first.get("focus_mode"),
+                "lens_position_median": float(np.median([c["lens_position"] for c in camera_records if "lens_position" in c])),
+                "exposure_mode": first.get("exposure_mode"),
+                "iso_median": float(np.median([c["ISO"] for c in camera_records if "ISO" in c])),
+                "exposure_duration_median_s": float(
+                    np.median([c["exposure_duration"] for c in camera_records if "exposure_duration" in c])
+                ),
+                "white_balance_mode": first.get("white_balance_mode"),
+                "white_balance_temperature_median_k": float(
+                    np.median([c["white_balance_temperature"] for c in camera_records if "white_balance_temperature" in c])
+                ),
+            }
+        )
+    return result
 
 
 def set_equal_aspect_3d(ax, points: np.ndarray) -> None:
@@ -240,14 +383,15 @@ def save_beauty_front_view(
     width = metrics.get("projected_width_m")
     height = metrics.get("projected_height_m")
     density = metrics.get("density_points_per_m2")
-    rms = metrics.get("plane_residuals", {}).get("rms_mm")
+    coverage = metrics.get("surface_reconstruction_ratio")
     title = "Pix4D dense point cloud - facade projection"
     subtitle = (
         f"{metrics['point_count']:,} points | "
         f"{width:.2f} m x {height:.2f} m | "
-        f"{density/1_000_000:.2f}M pts/m2 | "
-        f"plane RMS {rms:.2f} mm"
+        f"{density/1_000_000:.2f}M pts/m2"
     ).replace(",", " ")
+    if coverage is not None:
+        subtitle += f" | surface rebuilt {coverage*100:.1f}%"
     ax.text(
         0.02,
         0.98,
@@ -307,6 +451,39 @@ def save_density_view(path: Path, projected: np.ndarray) -> None:
     ax.set_ylabel("Facade vertical axis [m]")
     ax.set_aspect("equal", adjustable="box")
     fig.colorbar(hist[3], ax=ax, label="Points per bin")
+    fig.tight_layout()
+    fig.savefig(path)
+    plt.close(fig)
+
+
+def save_depth_gaussian_view(path: Path, signed_distances: np.ndarray) -> None:
+    residual_mm = (signed_distances - np.median(signed_distances)) * 1000.0
+    mu = float(np.mean(residual_mm))
+    sigma = float(np.std(residual_mm))
+    limit = max(8.0, np.percentile(np.abs(residual_mm), 99))
+    xs = np.linspace(mu - limit, mu + limit, 600)
+    gaussian = (1.0 / (sigma * math.sqrt(2.0 * math.pi))) * np.exp(-0.5 * ((xs - mu) / sigma) ** 2)
+
+    fig, ax = plt.subplots(figsize=(11, 6), dpi=180)
+    counts, bins, _ = ax.hist(
+        residual_mm,
+        bins=140,
+        density=True,
+        color="#98c1d9",
+        alpha=0.75,
+        label="Measured point distances",
+    )
+    ax.plot(xs, gaussian, color="#e63946", linewidth=2.4, label=f"Fitted Gaussian, sigma = {sigma:.2f} mm")
+    for n, color in [(1, "#2a9d8f"), (2, "#f4a261"), (3, "#e76f51")]:
+        ax.axvline(mu - n * sigma, color=color, linestyle="--", linewidth=1)
+        ax.axvline(mu + n * sigma, color=color, linestyle="--", linewidth=1, label=f"+/- {n} sigma")
+    ax.axvline(0.0, color="#111111", linewidth=1.5, label="median surface plane")
+    ax.axvline(mu, color="#6c757d", linewidth=1.2, linestyle=":", label=f"Gaussian mean = {mu:.2f} mm")
+    ax.set_title("Depth distribution relative to the median surface plane")
+    ax.set_xlabel("Signed distance to median surface plane [mm]")
+    ax.set_ylabel("Probability density")
+    ax.grid(True, alpha=0.25)
+    ax.legend(fontsize=8)
     fig.tight_layout()
     fig.savefig(path)
     plt.close(fig)
@@ -378,15 +555,20 @@ def write_html(path: Path, metrics: dict, image_paths: list[Path]) -> None:
         ("Total points", fmt(metrics["point_count"])),
         ("Captures", fmt(metrics.get("capture_count"))),
         ("Passes", fmt(metrics.get("pass_count"))),
-        ("Wall distance hint", fmt(metrics.get("wall_distance_hint_m"), "m")),
+        ("Wall distance", fmt(metrics.get("wall_distance_hint_m"), "m")),
         ("Zaber range", f"{fmt(metrics.get('zaber_min_mm'), 'mm', 1)} - {fmt(metrics.get('zaber_max_mm'), 'mm', 1)}"),
         ("Manual horizontal span", f"{fmt(metrics.get('x_offset_min_m'), 'm')} - {fmt(metrics.get('x_offset_max_m'), 'm')}"),
+        ("Camera FOV H x V", f"{fmt(metrics.get('camera_horizontal_fov_deg'), 'deg')} x {fmt(metrics.get('camera_vertical_fov_deg'), 'deg')}"),
+        ("Single-frame wall footprint", f"{fmt(metrics.get('single_frame_wall_width_m'), 'm')} x {fmt(metrics.get('single_frame_wall_height_m'), 'm')}"),
+        ("Expected wall coverage", f"{fmt(metrics.get('expected_wall_width_m'), 'm')} x {fmt(metrics.get('expected_wall_height_m'), 'm')}"),
+        ("Expected wall area", fmt(metrics.get("expected_wall_area_m2"), "m2")),
+        ("Reconstructed surface ratio", fmt(metrics.get("surface_reconstruction_ratio"), "", 3)),
         ("Projected facade area", fmt(metrics["projected_area_m2"], "m2")),
         ("Point density", fmt(metrics["density_points_per_m2"], "pts/m2", 0)),
         ("Median nearest-neighbor spacing", fmt(metrics["nearest_neighbor"]["median_mm"], "mm")),
-        ("Plane RMS residual", fmt(metrics["plane_residuals"]["rms_mm"], "mm")),
-        ("Plane median abs residual", fmt(metrics["plane_residuals"]["median_abs_mm"], "mm")),
-        ("Plane p95 abs residual", fmt(metrics["plane_residuals"]["p95_abs_mm"], "mm")),
+        ("Depth Gaussian sigma", fmt(metrics.get("depth_distribution", {}).get("gaussian_sigma_mm"), "mm")),
+        ("Source image MP", fmt(metrics.get("source_image_megapixels"), "MP")),
+        ("Processed image MP", fmt(metrics.get("processed_image_megapixels"), "MP")),
     ]
     rows_html = "\n".join(f"<tr><th>{name}</th><td>{value}</td></tr>" for name, value in rows)
     images_html = "\n".join(
@@ -416,6 +598,9 @@ def write_html(path: Path, metrics: dict, image_paths: list[Path]) -> None:
   <p class="subtitle">Input: <code>{metrics["las_path"]}</code></p>
   <h2>Key Metrics</h2>
   <table>{rows_html}</table>
+  <h2>Acquisition Notes</h2>
+  <p>{metrics.get("surface_description", "")}</p>
+  <p>{metrics.get("enhancement_description", "")}</p>
   <h2>Visual Diagnostics</h2>
   {images_html}
 </body>
@@ -453,24 +638,30 @@ def write_pdf(path: Path, metrics: dict, image_paths: list[Path]) -> None:
             metric_text("Points", fmt(metrics["point_count"])),
             metric_text("Captures", fmt(metrics.get("capture_count"))),
             metric_text("Passes", fmt(metrics.get("pass_count"))),
-            metric_text("Wall distance hint", fmt(metrics.get("wall_distance_hint_m"), "m")),
-            metric_text("Projected size", f"{fmt(metrics.get('projected_width_m'), 'm')} x {fmt(metrics.get('projected_height_m'), 'm')}"),
-            metric_text("Projected area", fmt(metrics.get("projected_area_m2"), "m2")),
+            metric_text("Wall distance", fmt(metrics.get("wall_distance_hint_m"), "m")),
+            metric_text("Camera FOV H x V", f"{fmt(metrics.get('camera_horizontal_fov_deg'), 'deg')} x {fmt(metrics.get('camera_vertical_fov_deg'), 'deg')}"),
+            metric_text("Single-frame footprint", f"{fmt(metrics.get('single_frame_wall_width_m'), 'm')} x {fmt(metrics.get('single_frame_wall_height_m'), 'm')}"),
+            metric_text("Camera-center path", f"{fmt(metrics.get('scan_path_width_m'), 'm')} x {fmt(metrics.get('scan_path_height_m'), 'm')}"),
+            metric_text("Expected wall coverage", f"{fmt(metrics.get('expected_wall_width_m'), 'm')} x {fmt(metrics.get('expected_wall_height_m'), 'm')}"),
+            metric_text("Expected wall area", fmt(metrics.get("expected_wall_area_m2"), "m2")),
+            metric_text("Reconstructed size", f"{fmt(metrics.get('projected_width_m'), 'm')} x {fmt(metrics.get('projected_height_m'), 'm')}"),
+            metric_text("Reconstructed area", fmt(metrics.get("projected_area_m2"), "m2")),
+            metric_text("Surface rebuilt", f"{fmt(metrics.get('surface_reconstruction_ratio'), '', 3)} ({fmt((metrics.get('surface_reconstruction_ratio') or 0.0) * 100.0, '%', 1)})"),
             metric_text("Density", fmt(metrics.get("density_points_per_m2"), "pts/m2", 0)),
             metric_text("Median spacing", fmt(metrics["nearest_neighbor"]["median_mm"], "mm")),
-            metric_text("Plane RMS", fmt(metrics["plane_residuals"]["rms_mm"], "mm")),
-            metric_text("Plane median abs", fmt(metrics["plane_residuals"]["median_abs_mm"], "mm")),
-            metric_text("Plane p95 abs", fmt(metrics["plane_residuals"]["p95_abs_mm"], "mm")),
+            metric_text("Depth Gaussian sigma", fmt(metrics.get("depth_distribution", {}).get("gaussian_sigma_mm"), "mm")),
+            metric_text("Source image", f"{fmt(metrics.get('source_image_megapixels'), 'MP')} ({fmt(metrics.get('source_image_width_px'))} x {fmt(metrics.get('source_image_height_px'))})"),
+            metric_text("Processed image", f"{fmt(metrics.get('processed_image_megapixels'), 'MP')} ({fmt(metrics.get('processed_image_width_px'))} x {fmt(metrics.get('processed_image_height_px'))})"),
         ]
         ax_metrics = fig.add_axes([0.67, 0.18, 0.30, 0.62])
         ax_metrics.axis("off")
         ax_metrics.text(0, 1.0, "Key metrics", fontsize=14, fontweight="bold", va="top")
         for index, row in enumerate(rows):
-            ax_metrics.text(0, 0.92 - index * 0.075, row, fontsize=10, va="top")
+            ax_metrics.text(0, 0.92 - index * 0.052, row, fontsize=8.6, va="top")
         ax_metrics.text(
             0,
             0.02,
-            "Note: wall distance is a pose hint used during processing, not an independent laser/station measurement.",
+            "Surface: plaster wall, highly featureless, with protrusions of only a few millimetres.",
             fontsize=8,
             color="#666666",
             wrap=True,
@@ -482,7 +673,20 @@ def write_pdf(path: Path, metrics: dict, image_paths: list[Path]) -> None:
         for ax, image_path, title in zip(
             axs,
             image_paths[1:3],
-            ["Distance to fitted plane", "Projected point density"],
+            ["Distance to fitted plane", "Depth distribution around plane"],
+        ):
+            ax.imshow(plt.imread(image_path))
+            ax.set_title(title, fontsize=12)
+            ax.axis("off")
+        fig.tight_layout()
+        pdf.savefig(fig, bbox_inches="tight")
+        plt.close(fig)
+
+        fig, axs = plt.subplots(1, 2, figsize=(11.69, 8.27), dpi=160)
+        for ax, image_path, title in zip(
+            axs,
+            image_paths[3:5],
+            ["Projected point density", "Fitted plane in 3D"],
         ):
             ax.imshow(plt.imread(image_path))
             ax.set_title(title, fontsize=12)
@@ -506,6 +710,7 @@ def main() -> int:
     normal, d, signed_sample, inlier_ratio = fit_plane(sample)
     origin = -d * normal
     signed_all = (points - origin) @ normal
+    signed_all_median_plane = signed_all - np.median(signed_all)
     horizontal, vertical = plane_axes(normal)
     projected_all = projected_coordinates(points, origin, horizontal, vertical)
     projected_all = projected_all - projected_all.min(axis=0)
@@ -527,21 +732,39 @@ def main() -> int:
         "projected_area_m2": area,
         "density_points_per_m2": float(len(points) / area) if area > 0 else None,
         "plane_residuals": residual_stats(signed_all),
+        "depth_distribution": depth_distribution_stats(signed_all),
         "nearest_neighbor": nearest_neighbor_stats(projected_all, args.sample_size, args.seed),
+        "expected_width_m": args.expected_width_m,
+        "expected_height_m": args.expected_height_m,
+        "wall_distance_m_user": args.wall_distance_m,
+        "surface_description": args.surface_description,
+        "enhancement_description": args.enhancement_description,
     }
+    if args.expected_width_m:
+        metrics["width_coverage_ratio"] = metrics["projected_width_m"] / args.expected_width_m
+        metrics["width_delta_m"] = metrics["projected_width_m"] - args.expected_width_m
+    if args.expected_height_m:
+        metrics["height_coverage_ratio"] = metrics["projected_height_m"] / args.expected_height_m
+        metrics["height_delta_m"] = metrics["projected_height_m"] - args.expected_height_m
 
     session_dir = args.session_dir or autodetect_session_dir(las_path)
     metrics.update(read_manifest(session_dir))
     metrics.update(read_pose_hints(las_path.parents[1]))
+    metrics.update(read_image_metadata(session_dir))
+    if args.wall_distance_m is not None:
+        metrics["wall_distance_hint_m"] = args.wall_distance_m
+    add_fov_expected_coverage(metrics, args.camera_35mm_equivalent_mm)
 
     beauty = output_dir / "00_pointcloud_front_beauty.png"
     front = output_dir / "01_facade_projection_rgb.png"
     residual = output_dir / "02_plane_residuals_mm.png"
-    density = output_dir / "03_projected_density.png"
-    view_3d = output_dir / "04_cloud_with_fitted_plane.png"
+    depth_gaussian = output_dir / "03_depth_gaussian.png"
+    density = output_dir / "04_projected_density.png"
+    view_3d = output_dir / "05_cloud_with_fitted_plane.png"
     save_beauty_front_view(beauty, projected_sample, sample_colors, metrics)
     save_front_view(front, projected_sample, sample_colors)
-    save_residual_view(residual, projected_sample, signed_sample)
+    save_residual_view(residual, projected_sample, signed_all_median_plane[idx])
+    save_depth_gaussian_view(depth_gaussian, signed_all)
     save_density_view(density, projected_sample)
     save_3d_view(view_3d, sample, sample_colors, origin, normal, horizontal, vertical, projected_sample)
 
@@ -549,14 +772,17 @@ def main() -> int:
     metrics_path.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
     report_path = output_dir / "report.html"
     pdf_path = output_dir / "report.pdf"
-    write_html(report_path, metrics, [beauty, front, residual, density, view_3d])
-    write_pdf(pdf_path, metrics, [beauty, residual, density])
+    write_html(report_path, metrics, [beauty, front, residual, depth_gaussian, density, view_3d])
+    write_pdf(pdf_path, metrics, [beauty, residual, depth_gaussian, density, view_3d])
 
     print(f"[report] input: {las_path}")
     print(f"[report] points: {len(points):,}")
     print(f"[report] area: {metrics['projected_area_m2']:.3f} m2")
     print(f"[report] density: {metrics['density_points_per_m2']:.0f} pts/m2")
-    print(f"[report] plane RMS: {metrics['plane_residuals']['rms_mm']:.2f} mm")
+    if metrics.get("surface_reconstruction_ratio") is not None:
+        print(f"[report] expected FOV area: {metrics['expected_wall_area_m2']:.3f} m2")
+        print(f"[report] rebuilt surface ratio: {metrics['surface_reconstruction_ratio']*100:.1f}%")
+    print(f"[report] depth sigma: {metrics['depth_distribution']['gaussian_sigma_mm']:.2f} mm")
     print(f"[report] output: {report_path}")
     print(f"[report] pdf: {pdf_path}")
     print(f"[report] beauty png: {beauty}")

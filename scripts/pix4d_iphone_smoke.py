@@ -72,6 +72,42 @@ def parse_args() -> argparse.Namespace:
         default=0.0,
         help="Horizontal column position used for --pose-source zaber.",
     )
+    parser.add_argument(
+        "--zaber-sigma-x-m",
+        type=float,
+        default=0.20,
+        help="East/X geotag sigma for --pose-source zaber.",
+    )
+    parser.add_argument(
+        "--zaber-sigma-y-m",
+        type=float,
+        default=0.10,
+        help="North/wall-distance geotag sigma for --pose-source zaber.",
+    )
+    parser.add_argument(
+        "--zaber-sigma-z-m",
+        type=float,
+        default=0.005,
+        help="Up/Z geotag sigma for --pose-source zaber.",
+    )
+    parser.add_argument(
+        "--prior-position-confidence",
+        choices=("low", "high"),
+        default="low",
+        help="Pix4D calibration prior position confidence.",
+    )
+    parser.add_argument(
+        "--calib-image-scale",
+        type=float,
+        default=1.0,
+        help="Calibration image scale. Values below 1 downscale images for matching.",
+    )
+    parser.add_argument(
+        "--min-matches",
+        type=int,
+        default=None,
+        help="Override Pix4D calibration min_matches.",
+    )
     return parser.parse_args()
 
 
@@ -152,6 +188,9 @@ def prepare_inputs(
     wall_distance_m: float,
     zaber_height_offset_mm: float,
     column_x_m: float,
+    zaber_sigma_x_m: float,
+    zaber_sigma_y_m: float,
+    zaber_sigma_z_m: float,
     manifest_by_capture_id: dict[str, dict],
 ) -> tuple[list[Path], dict[Path, cameras.GeoTag]]:
     input_dir = output_dir / "input_data"
@@ -225,9 +264,9 @@ def prepare_inputs(
                     camera_x_m = float(manifest_record.get("x_offset_m", column_x_m))
                     camera_y_m = wall_distance_m
                     camera_z_m = (float(measured_mm) + zaber_height_offset_mm) / 1000.0
-                    sigma_east_m = 0.20
-                    sigma_north_m = 0.10
-                    sigma_up_m = 0.005
+                    sigma_east_m = zaber_sigma_x_m
+                    sigma_north_m = zaber_sigma_y_m
+                    sigma_up_m = zaber_sigma_z_m
                 else:
                     # PIX4Dengine requires a geolocation in order to accept yaw/pitch/roll.
                     # These positions deliberately have huge sigmas: they only bootstrap a
@@ -320,6 +359,9 @@ def main() -> int:
         wall_distance_m=args.wall_distance_m,
         zaber_height_offset_mm=args.zaber_height_offset_mm,
         column_x_m=args.column_x_m,
+        zaber_sigma_x_m=args.zaber_sigma_x_m,
+        zaber_sigma_y_m=args.zaber_sigma_y_m,
+        zaber_sigma_z_m=args.zaber_sigma_z_m,
         manifest_by_capture_id=manifest_by_capture_id,
     )
     require_pix4d_credentials()
@@ -358,6 +400,14 @@ def main() -> int:
     print("[pix4d] calibrate")
     calib_settings = calib.Settings.TEMPLATES.LARGE
     calib_settings.pipeline = calib.Settings.CalibrationType.Standard
+    calib_settings.image_scale = args.calib_image_scale
+    confidence_map = {
+        "low": calib.Settings.PriorPositionConfidenceType.Low,
+        "high": calib.Settings.PriorPositionConfidenceType.High,
+    }
+    calib_settings.prior_position_confidence = confidence_map[args.prior_position_confidence]
+    if args.min_matches is not None:
+        calib_settings.min_matches = args.min_matches
     calibrated_scene = calib.calibrate(
         cameras=projected_cameras,
         settings=calib_settings,
