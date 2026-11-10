@@ -3,4 +3,5 @@ PyYAML>=6.0,<7
 pytest>=8.0,<10
 setuptools>=68
 websockets>=12,<16
+bleak>=0.21,<1
 ifcopenshell>=0.8,<1
