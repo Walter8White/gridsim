@@ -2,6 +2,10 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>GridCapture uses Photos to finish 24 MP deferred processing and retrieve the full resolution image for upload.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>GridCapture saves 24 MP photo proxies to Photos for full resolution processing.</string>
 	<key>LSSupportsOpeningDocumentsInPlace</key>
 	<true/>
 	<key>NSCameraUsageDescription</key>

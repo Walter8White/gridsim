@@ -165,7 +165,10 @@ final class CaptureNetworkService: ObservableObject {
                 captureID: captureID,
                 targetPositionMM: wire.targetPositionMM,
                 measuredPositionMM: wire.measuredPositionMM,
-                receivedAt: Date()
+                receivedAt: Date(),
+                passIndex: wire.passIndex,
+                passCaptureIndex: wire.passCaptureIndex,
+                xOffsetCM: wire.xOffsetCM ?? wire.xOffsetM.map { $0 * 100 }
             ))
         default:
             break
@@ -180,20 +183,6 @@ final class CaptureNetworkService: ObservableObject {
         if components.port == nil { components.port = 8765 }
         if components.path.isEmpty { components.path = "/" }
         return components.url
-    }
-}
-
-private struct IncomingMessage: Decodable {
-    let type: String
-    let captureID: String?
-    let targetPositionMM: Double?
-    let measuredPositionMM: Double?
-
-    enum CodingKeys: String, CodingKey {
-        case type
-        case captureID = "capture_id"
-        case targetPositionMM = "target_position_mm"
-        case measuredPositionMM = "measured_position_mm"
     }
 }
 
