@@ -1,6 +1,8 @@
 @preconcurrency import AVFoundation
 import Combine
 import Foundation
+import CoreImage
+import UIKit
 
 @MainActor
 final class CameraService: NSObject, ObservableObject {
@@ -13,6 +15,9 @@ final class CameraService: NSObject, ObservableObject {
     @Published private(set) var message: String?
     @Published private(set) var lastCapture: CaptureRecord?
 
+    var onPreviewFrame: ((Data) -> Void)?
+    private let videoOutput = AVCaptureVideoDataOutput()
+    private var previewDelegate: PreviewDelegate?
     private let output = AVCapturePhotoOutput()
     private let sessionQueue = DispatchQueue(label: "com.deploya.gridcapture.camera")
     private var delegates: [Int64: PhotoDelegate] = [:]
@@ -115,6 +120,19 @@ final class CameraService: NSObject, ObservableObject {
         }
         session.addInput(input)
         session.addOutput(output)
+        if session.canAddOutput(videoOutput) {
+            videoOutput.alwaysDiscardsLateVideoFrames = true
+            videoOutput.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
+            let delegate = PreviewDelegate { [weak self] data in
+                Task { @MainActor in self?.onPreviewFrame?(data) }
+            }
+            previewDelegate = delegate
+            videoOutput.setSampleBufferDelegate(delegate, queue: DispatchQueue(label: "com.deploya.gridcapture.preview"))
+            session.addOutput(videoOutput)
+            if let connection = videoOutput.connection(with: .video), connection.isVideoOrientationSupported {
+                connection.videoOrientation = .portrait
+            }
+        }
         configured = true
     }
 
@@ -185,5 +203,27 @@ private enum CameraError: LocalizedError {
         case .noPhotoData: "The camera returned no photo data."
         case .cameraNotReady: "The camera is not ready to capture."
         }
+    }
+}
+
+// A small JPEG at 5 fps keeps preview traffic separate from full-resolution stills.
+nonisolated private final class PreviewDelegate: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unchecked Sendable {
+    private let context = CIContext()
+    private var lastFrame = CMTime.zero
+    private let deliver: @Sendable (Data) -> Void
+
+    init(deliver: @escaping @Sendable (Data) -> Void) { self.deliver = deliver }
+
+    func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
+        let timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+        guard CMTimeGetSeconds(timestamp - lastFrame) >= 0.2,
+              let buffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+        lastFrame = timestamp
+        let image = CIImage(cvPixelBuffer: buffer)
+        let scale = min(1, 640 / max(image.extent.width, image.extent.height))
+        let scaled = image.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+        guard let cgImage = context.createCGImage(scaled, from: scaled.extent),
+              let data = UIImage(cgImage: cgImage).jpegData(compressionQuality: 0.55) else { return }
+        deliver(data)
     }
 }

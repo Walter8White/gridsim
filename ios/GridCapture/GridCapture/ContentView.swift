@@ -22,6 +22,7 @@ struct ContentView: View {
             .padding()
         }
         .task {
+            camera.onPreviewFrame = { data in network.sendPreview(data) }
             network.onCaptureCommand = { command in
                 camera.capture(command: command, motion: motion.sample) { result in
                     network.send(result: result, captureID: command.captureID)

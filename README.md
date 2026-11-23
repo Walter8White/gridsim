@@ -198,3 +198,7 @@ See [docs/architecture.md](docs/architecture.md),
 4. Connect RTX LiDAR, grid IMU, and robot IMU data through the ROS 2 bridge.
 5. Add recorded-data replay and calibration fixtures.
 6. Replace placeholder estimators with validated algorithms and uncertainty.
+
+## Motor control station
+
+Run `python scripts/control_station.py` for the Linux desktop GUI with PINE BLE and Zaber USB jogging, references/homing, live GridCapture preview, and photo scans. Install the optional dependencies with `python -m pip install -e ".[station]"`. See [setup and controls](docs/control_station.md); `--demo` simulates motors.

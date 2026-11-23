@@ -12,6 +12,25 @@ final class CaptureNetworkService: ObservableObject {
     @Published private(set) var message = "Disconnected"
     var onCaptureCommand: ((CaptureCommand) -> Void)?
 
+    private var previewEnabled = false
+    private var previewSending = false
+
+    func sendPreview(_ jpeg: Data) {
+        guard previewEnabled, state == .connected, !previewSending, let socket else { return }
+        previewSending = true
+        Task {
+            defer { previewSending = false }
+            do {
+                let data = try JSONSerialization.data(withJSONObject: ["type": "preview", "jpeg": jpeg.base64EncodedString()])
+                if let text = String(data: data, encoding: .utf8) {
+                    try await socket.send(.string(text))
+                }
+            } catch {
+                // The receive loop reports connection loss. Drop stale preview frames.
+            }
+        }
+    }
+
     private var socket: URLSessionWebSocketTask?
     private var receiveTask: Task<Void, Never>?
 
@@ -34,6 +53,7 @@ final class CaptureNetworkService: ObservableObject {
     }
 
     func disconnect() {
+        previewEnabled = false
         receiveTask?.cancel()
         receiveTask = nil
         socket?.cancel(with: .normalClosure, reason: nil)
@@ -152,6 +172,7 @@ final class CaptureNetworkService: ObservableObject {
         let wire = try JSONDecoder().decode(IncomingMessage.self, from: data)
         switch wire.type {
         case "hello":
+            previewEnabled = wire.mode == "control-station"
             state = .connected
             message = "Connected to Linux"
         case "capture":
@@ -185,12 +206,13 @@ final class CaptureNetworkService: ObservableObject {
 
 private struct IncomingMessage: Decodable {
     let type: String
+    let mode: String?
     let captureID: String?
     let targetPositionMM: Double?
     let measuredPositionMM: Double?
 
     enum CodingKeys: String, CodingKey {
-        case type
+        case type, mode
         case captureID = "capture_id"
         case targetPositionMM = "target_position_mm"
         case measuredPositionMM = "measured_position_mm"
