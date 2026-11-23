@@ -433,7 +433,7 @@ private enum CameraError: LocalizedError {
     var errorDescription: String? { if case .problem(let text) = self { return text }; return nil }
 }
 
-// A small JPEG at 5 fps keeps preview traffic separate from full-resolution stills.
+// A compact 800 px JPEG at 20 fps keeps preview traffic separate from full-resolution stills.
 nonisolated private final class PreviewDelegate: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unchecked Sendable {
     private let context = CIContext()
     private var lastFrame = CMTime.zero
@@ -443,14 +443,14 @@ nonisolated private final class PreviewDelegate: NSObject, AVCaptureVideoDataOut
 
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
         let timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
-        guard CMTimeGetSeconds(timestamp - lastFrame) >= 0.2,
+        guard CMTimeGetSeconds(timestamp - lastFrame) >= 0.05,
               let buffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
         lastFrame = timestamp
         let image = CIImage(cvPixelBuffer: buffer)
-        let scale = min(1, 640 / max(image.extent.width, image.extent.height))
+        let scale = min(1, 800 / max(image.extent.width, image.extent.height))
         let scaled = image.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
         guard let cgImage = context.createCGImage(scaled, from: scaled.extent),
-              let data = UIImage(cgImage: cgImage).jpegData(compressionQuality: 0.55) else { return }
+              let data = UIImage(cgImage: cgImage).jpegData(compressionQuality: 0.5) else { return }
         deliver(data)
     }
 }
