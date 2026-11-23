@@ -1,8 +1,9 @@
 @preconcurrency import AVFoundation
 import Combine
 import Foundation
-import CoreImage
-import UIKit
+import ImageIO
+import Photos
+import UniformTypeIdentifiers
 
 @MainActor
 final class CameraService: NSObject, ObservableObject {
@@ -11,10 +12,14 @@ final class CameraService: NSObject, ObservableObject {
     @Published private(set) var state: State = .idle
     @Published private(set) var message: String?
     @Published private(set) var lastCapture: CaptureRecord?
-
-    var onPreviewFrame: ((Data) -> Void)?
-    private let videoOutput = AVCaptureVideoDataOutput()
-    private var previewDelegate: PreviewDelegate?
+    @Published private(set) var cameras: [AVCaptureDevice] = []
+    @Published private(set) var cameraID = ""
+    @Published private(set) var resolutions: [PhotoDimensions] = []
+    @Published private(set) var resolutionID = ""
+    @Published private(set) var formats: [String] = []
+    @Published private(set) var live: CameraMetadata?
+    @Published private(set) var photogrammetry = false
+    @Published private(set) var passLocked = false
     private let output = AVCapturePhotoOutput()
     private let sessionQueue = DispatchQueue(label: "com.deploya.gridcapture.camera")
     private var device: AVCaptureDevice?
@@ -103,20 +108,33 @@ final class CameraService: NSObject, ObservableObject {
             throw CameraError.problem("Camera input unavailable.")
         }
         session.addInput(input)
-        session.addOutput(output)
-        if session.canAddOutput(videoOutput) {
-            videoOutput.alwaysDiscardsLateVideoFrames = true
-            videoOutput.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
-            let delegate = PreviewDelegate { [weak self] data in
-                Task { @MainActor in self?.onPreviewFrame?(data) }
-            }
-            previewDelegate = delegate
-            videoOutput.setSampleBufferDelegate(delegate, queue: DispatchQueue(label: "com.deploya.gridcapture.preview"))
-            session.addOutput(videoOutput)
-            if let connection = videoOutput.connection(with: .video), connection.isVideoOrientationSupported {
-                connection.videoOrientation = .portrait
-            }
+        if !session.outputs.contains(output) {
+            guard session.canAddOutput(output) else { throw CameraError.problem("Photo output unavailable.") }
+            session.addOutput(output)
         }
+        try next.lockForConfiguration()
+        defer { next.unlockForConfiguration() }
+        // Select a real format advertising the largest still dimensions; never invent 24/48 MP support.
+        guard let best = next.formats.max(by: { largest($0) < largest($1) }) else { throw CameraError.problem("No photo formats.") }
+        next.activeFormat = best
+        next.videoZoomFactor = 1
+        device = next; cameraID = next.uniqueID
+        captureRotation = AVCaptureDevice.RotationCoordinator(device: next, previewLayer: nil)
+        formats = next.formats.enumerated().map { index, format in
+            let video = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
+            return "Format \(index): video \(video.width)×\(video.height), photos " + format.supportedMaxPhotoDimensions.map { "\($0.width)×\($0.height)" }.joined(separator: ", ")
+        }
+        resolutions = Array(Set(next.formats.flatMap { $0.supportedMaxPhotoDimensions }.map { PhotoDimensions(width: $0.width, height: $0.height) })).sorted { $0.pixels < $1.pixels }
+        guard let maximum = resolutions.last else { throw CameraError.problem("No supported photo dimensions.") }
+        output.maxPhotoDimensions = CMVideoDimensions(width: maximum.width, height: maximum.height)
+        output.maxPhotoQualityPrioritization = .quality
+        output.isAutoDeferredPhotoDeliveryEnabled = false
+        resolutionID = maximum.id
+        if next.isFocusModeSupported(.continuousAutoFocus) { next.focusMode = .continuousAutoFocus }
+        if next.isExposureModeSupported(.continuousAutoExposure) { next.exposureMode = .continuousAutoExposure }
+        if next.isWhiteBalanceModeSupported(.continuousAutoWhiteBalance) { next.whiteBalanceMode = .continuousAutoWhiteBalance }
+        if let connection = output.connection(with: .video), connection.isVideoStabilizationSupported { connection.preferredVideoStabilizationMode = .off }
+        passLocked = false
         configured = true
         refresh()
     }
@@ -400,46 +418,3 @@ private enum CameraError: LocalizedError {
     var errorDescription: String? { if case .problem(let text) = self { return text }; return nil }
 }
 
-// A small JPEG at 5 fps keeps preview traffic separate from full-resolution stills.
-nonisolated private final class PreviewDelegate: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unchecked Sendable {
-    private let context = CIContext()
-    private var lastFrame = CMTime.zero
-    private let deliver: @Sendable (Data) -> Void
-
-    init(deliver: @escaping @Sendable (Data) -> Void) { self.deliver = deliver }
-
-    func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
-        let timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
-        guard CMTimeGetSeconds(timestamp - lastFrame) >= 0.2,
-              let buffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
-        lastFrame = timestamp
-        let image = CIImage(cvPixelBuffer: buffer)
-        let scale = min(1, 640 / max(image.extent.width, image.extent.height))
-        let scaled = image.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
-        guard let cgImage = context.createCGImage(scaled, from: scaled.extent),
-              let data = UIImage(cgImage: cgImage).jpegData(compressionQuality: 0.55) else { return }
-        deliver(data)
-    }
-}
-
-// A small JPEG at 5 fps keeps preview traffic separate from full-resolution stills.
-nonisolated private final class PreviewDelegate: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unchecked Sendable {
-    private let context = CIContext()
-    private var lastFrame = CMTime.zero
-    private let deliver: @Sendable (Data) -> Void
-
-    init(deliver: @escaping @Sendable (Data) -> Void) { self.deliver = deliver }
-
-    func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
-        let timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
-        guard CMTimeGetSeconds(timestamp - lastFrame) >= 0.2,
-              let buffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
-        lastFrame = timestamp
-        let image = CIImage(cvPixelBuffer: buffer)
-        let scale = min(1, 640 / max(image.extent.width, image.extent.height))
-        let scaled = image.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
-        guard let cgImage = context.createCGImage(scaled, from: scaled.extent),
-              let data = UIImage(cgImage: cgImage).jpegData(compressionQuality: 0.55) else { return }
-        deliver(data)
-    }
-}
