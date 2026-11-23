@@ -129,9 +129,11 @@ struct IncomingMessage: Decodable {
     let passCaptureIndex: Int?
     let xOffsetCM: Double?
     let xOffsetM: Double?
+    let cameraSettings: RemoteCameraSettings?
 
     enum CodingKeys: String, CodingKey {
         case type
+        case cameraSettings = "settings"
         case passIndex = "pass_index"
         case passCaptureIndex = "pass_capture_index"
         case xOffsetCM = "x_offset_cm"
