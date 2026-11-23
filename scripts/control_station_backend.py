@@ -64,6 +64,11 @@ class Station:
     def status(self, message):
         self.emit("status", message)
 
+    async def set_camera_setting(self, settings):
+        if not self.phone:
+            raise RuntimeError("GridCapture is not connected")
+        await self.phone.send(json.dumps({"type": "camera_settings", "settings": settings}))
+
     async def serial(self, function, *args, **kwargs):
         import functools
         return await asyncio.get_running_loop().run_in_executor(
@@ -118,6 +123,9 @@ class Station:
                         data = base64.b64decode(message["jpeg"], validate=True)
                         if len(data) <= 2_000_000:
                             self.emit("preview", data)
+                        continue
+                    if message.get("type") == "camera_state":
+                        self.emit("camera_state", message)
                         continue
                 if self.scan is not None:
                     await self.inbox.queue.put(raw)

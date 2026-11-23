@@ -29,6 +29,13 @@ struct ContentView: View {
         }
         .task {
             camera.onPreviewFrame = { data in network.sendPreview(data) }
+            network.onConnected = { network.sendCameraState(camera.remoteSettingsSnapshot) }
+            network.onCameraSettings = { settings in
+                Task {
+                    await camera.applyRemoteSettings(settings)
+                    network.sendCameraState(camera.remoteSettingsSnapshot)
+                }
+            }
             network.onCaptureCommand = { command in
                 camera.capture(command: command, motion: motion.sample) { result in
                     network.send(result: result, captureID: command.captureID)
@@ -36,6 +43,7 @@ struct ContentView: View {
             }
             network.startDiscovery()
             await camera.start()
+            network.sendCameraState(camera.remoteSettingsSnapshot)
             lidar.refreshAvailability()
             motion.start()
         }

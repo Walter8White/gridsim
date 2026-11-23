@@ -245,6 +245,49 @@ final class CameraService: NSObject, ObservableObject {
         change { $0.whiteBalanceMode = locked ? .locked : .continuousAutoWhiteBalance }
     }
     func unlockPass() { guard state == .ready else { return }; passLocked = false; photogrammetry = false; message = "Pass unlocked; settings can be changed." }
+    func applyRemoteSettings(_ settings: RemoteCameraSettings) async {
+        guard state == .ready else { message = "Camera is not ready for remote settings."; return }
+        if passLocked { unlockPass() }
+        if settings.photogrammetry == true { await preparePhotogrammetry(); return }
+        if let id = settings.cameraID, id != cameraID { selectCamera(id) }
+        if let id = settings.resolutionID, id != resolutionID { await selectResolution(id) }
+        if let value = settings.focusLocked { setFocusLocked(value) }
+        if let value = settings.focusPosition { lens(value) }
+        if let value = settings.exposureLocked { setExposureLocked(value) }
+        if settings.iso != nil || settings.shutterSeconds != nil {
+            manualExposure(iso: settings.iso, seconds: settings.shutterSeconds)
+        }
+        if let value = settings.exposureBias { bias(value) }
+        if let value = settings.whiteBalanceLocked { setWhiteBalanceLocked(value) }
+        refresh()
+    }
+
+    var remoteSettingsSnapshot: [String: Any] {
+        let info = snapshot()
+        return [
+            "camera_id": cameraID,
+            "camera_options": cameras.map { ["id": $0.uniqueID, "name": $0.localizedName] },
+            "resolution_id": resolutionID,
+            "resolution_options": resolutions.map { ["id": $0.id, "label": $0.label] },
+            "focus_locked": isFocusLocked,
+            "focus_position": Double(device?.lensPosition ?? 0),
+            "focus_supported": canToggleFocus,
+            "manual_focus_supported": manualFocusSupported,
+            "exposure_locked": isExposureLocked,
+            "iso": info?.ISO ?? 0,
+            "iso_min": isoRange.lowerBound, "iso_max": isoRange.upperBound,
+            "shutter_seconds": info?.exposure_duration ?? 0,
+            "shutter_min": pow(10, shutterRange.lowerBound),
+            "shutter_max": pow(10, shutterRange.upperBound),
+            "manual_exposure_supported": manualExposureSupported,
+            "exposure_bias": exposureBias,
+            "bias_min": biasRange.lowerBound, "bias_max": biasRange.upperBound,
+            "white_balance_locked": isWhiteBalanceLocked,
+            "photogrammetry": photogrammetry, "pass_locked": passLocked,
+            "camera_state": state == .ready ? "ready" : "busy"
+        ]
+    }
+
 
     func preparePhotogrammetry() async {
         guard state == .ready, !passLocked else { return }

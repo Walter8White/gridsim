@@ -141,3 +141,23 @@ struct IncomingMessage: Decodable {
         case measuredPositionMM = "measured_position_mm"
     }
 }
+
+struct RemoteCameraSettings: Decodable, Sendable {
+    var cameraID: String?
+    var resolutionID: String?
+    var focusLocked: Bool?
+    var focusPosition: Double?
+    var exposureLocked: Bool?
+    var iso: Double?
+    var shutterSeconds: Double?
+    var exposureBias: Double?
+    var whiteBalanceLocked: Bool?
+    var photogrammetry: Bool?
+    enum CodingKeys: String, CodingKey {
+        case cameraID = "camera_id", resolutionID = "resolution_id"
+        case focusLocked = "focus_locked", focusPosition = "focus_position"
+        case exposureLocked = "exposure_locked", iso
+        case shutterSeconds = "shutter_seconds", exposureBias = "exposure_bias"
+        case whiteBalanceLocked = "white_balance_locked", photogrammetry
+    }
+}

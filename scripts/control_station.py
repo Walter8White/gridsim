@@ -11,7 +11,7 @@ from PySide6.QtGui import QPixmap, QShortcut, QKeySequence
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
     QHBoxLayout, QFormLayout, QLabel, QPushButton, QLineEdit, QSpinBox,
     QDoubleSpinBox, QTabWidget, QGroupBox, QDial, QPlainTextEdit, QCheckBox,
-    QProgressBar, QSplitter, QSlider)
+    QProgressBar, QSplitter, QSlider, QComboBox)
 from control_station_backend import Station
 
 
@@ -236,6 +236,46 @@ class Window(QMainWindow):
         controls_layout.addWidget(note)
         controls_layout.addStretch()
         self.tabs.addTab(controls, "Manual control")
+        camera_panel = QWidget()
+        camera_form = QFormLayout(camera_panel)
+        self.camera_settings = {}
+        self.camera_device = QComboBox()
+        self.camera_resolution = QComboBox()
+        self.camera_device.currentIndexChanged.connect(lambda _: self.send_camera_setting("camera_id", self.camera_device.currentData()))
+        self.camera_resolution.currentIndexChanged.connect(lambda _: self.send_camera_setting("resolution_id", self.camera_resolution.currentData()))
+        camera_form.addRow("iPhone camera", self.camera_device)
+        camera_form.addRow("Photo resolution", self.camera_resolution)
+        self.focus_lock = QCheckBox("Lock focus")
+        self.focus_lock.toggled.connect(lambda value: self.send_camera_setting("focus_locked", value))
+        camera_form.addRow("Focus", self.focus_lock)
+        self.focus_position = QDoubleSpinBox()
+        self.focus_position.setRange(0, 1); self.focus_position.setSingleStep(.01)
+        self.focus_position.valueChanged.connect(lambda value: self.send_camera_setting("focus_position", value))
+        camera_form.addRow("Manual lens position", self.focus_position)
+        self.exposure_lock = QCheckBox("Lock exposure")
+        self.exposure_lock.toggled.connect(lambda value: self.send_camera_setting("exposure_locked", value))
+        camera_form.addRow("Exposure", self.exposure_lock)
+        self.iso = QDoubleSpinBox(); self.iso.setDecimals(0); self.iso.setSingleStep(10)
+        self.iso.valueChanged.connect(lambda value: self.send_camera_setting("iso", value))
+        camera_form.addRow("Manual ISO", self.iso)
+        self.shutter = QDoubleSpinBox(); self.shutter.setDecimals(5); self.shutter.setSingleStep(.001)
+        self.shutter.valueChanged.connect(lambda value: self.send_camera_setting("shutter_seconds", value))
+        camera_form.addRow("Shutter (seconds)", self.shutter)
+        self.exposure_bias = QDoubleSpinBox(); self.exposure_bias.setDecimals(1); self.exposure_bias.setSingleStep(.1)
+        self.exposure_bias.valueChanged.connect(lambda value: self.send_camera_setting("exposure_bias", value))
+        camera_form.addRow("Exposure compensation (EV)", self.exposure_bias)
+        self.white_balance_lock = QCheckBox("Lock white balance")
+        self.white_balance_lock.toggled.connect(lambda value: self.send_camera_setting("white_balance_locked", value))
+        camera_form.addRow("White balance", self.white_balance_lock)
+        self.photogrammetry = QPushButton("Photogrammetry mode · lock for pass")
+        self.photogrammetry.clicked.connect(lambda: self.send_camera_setting("photogrammetry", True))
+        camera_form.addRow(self.photogrammetry)
+        self.unlock_camera = QPushButton("End pass · unlock camera")
+        self.unlock_camera.clicked.connect(lambda: self.send_camera_setting("photogrammetry", False))
+        camera_form.addRow(self.unlock_camera)
+        self.camera_settings_status = QLabel("Connect GridCapture to load camera capabilities.")
+        camera_form.addRow(self.camera_settings_status)
+        self.tabs.addTab(camera_panel, "Camera")
         recording = QWidget()
         form = QFormLayout(recording)
         self.fields = {}
@@ -350,11 +390,51 @@ class Window(QMainWindow):
         for key, box in self.axis_boxes.items():
             box.setEnabled(key in self.connected and not self.busy)
         self.record.setEnabled(self.phone and "zaber" in self.connected and not self.busy)
+        for widget in (self.camera_device, self.camera_resolution, self.focus_lock, self.focus_position,
+                       self.exposure_lock, self.iso, self.shutter, self.exposure_bias,
+                       self.white_balance_lock, self.photogrammetry, self.unlock_camera):
+            widget.setEnabled(self.phone and not self.busy)
         self.detect.setEnabled(not self.busy)
         self.connection_label.setText("Motors: " + (", ".join(sorted(self.connected)) or "disconnected") + " · iPhone: " + ("connected" if self.phone else "ready to discover" if self.station_ready else "waiting"))
         self.phone_connect.setEnabled(self.phone or self.station_ready)
         self.phone_connect.setText("Connected" if self.phone else "Connect")
         self.phone_connect.setStyleSheet("background: #2476c7; color: white;" if self.phone else "background: #28a66a; color: white;" if self.station_ready else "background: #39414c; color: #89929e;")
+
+    def send_camera_setting(self, key, value):
+        if value is not None and self.phone:
+            self.bridge.submit("set_camera_setting", {key: value})
+
+    def update_camera_state(self, state):
+        def refill(combo, choices, selected):
+            combo.blockSignals(True)
+            combo.clear()
+            for item in choices:
+                combo.addItem(item.get("name", item.get("label", item["id"])), item["id"])
+            index = combo.findData(selected)
+            if index >= 0: combo.setCurrentIndex(index)
+            combo.blockSignals(False)
+        refill(self.camera_device, state.get("camera_options", []), state.get("camera_id"))
+        refill(self.camera_resolution, state.get("resolution_options", []), state.get("resolution_id"))
+        for widget, value in ((self.focus_lock, state.get("focus_locked", False)),
+                              (self.exposure_lock, state.get("exposure_locked", False)),
+                              (self.white_balance_lock, state.get("white_balance_locked", False))):
+            widget.blockSignals(True); widget.setChecked(bool(value)); widget.blockSignals(False)
+        for widget, key, lo, hi in ((self.focus_position, "focus_position", 0, 1),
+                (self.iso, "iso", "iso_min", "iso_max"),
+                (self.shutter, "shutter_seconds", "shutter_min", "shutter_max"),
+                (self.exposure_bias, "exposure_bias", "bias_min", "bias_max")):
+            minimum = state[lo] if isinstance(lo, str) else lo
+            maximum = state[hi] if isinstance(hi, str) else hi
+            widget.blockSignals(True); widget.setRange(float(minimum), float(maximum))
+            widget.setValue(float(state.get(key, minimum))); widget.blockSignals(False)
+        self.camera_settings_status.setText(
+            f"iPhone camera {state.get('camera_state', 'unknown')} · "
+            f"focus {'locked' if state.get('pass_locked') else 'available'} · "
+            f"manual ISO {'supported' if state.get('manual_exposure_supported') else 'not supported'}")
+        self.focus_position.setEnabled(self.phone and state.get("manual_focus_supported", False) and not state.get("pass_locked", False))
+        self.iso.setEnabled(self.phone and state.get("manual_exposure_supported", False) and not state.get("pass_locked", False))
+        self.shutter.setEnabled(self.phone and state.get("manual_exposure_supported", False) and not state.get("pass_locked", False))
+        self.exposure_bias.setEnabled(self.phone and not state.get("exposure_locked", False) and not state.get("pass_locked", False))
 
     def on_event(self, kind, value):
         if getattr(self, "closing", False) and kind != "status":
@@ -394,6 +474,8 @@ class Window(QMainWindow):
                 self.camera.setPixmap(pixmap.scaled(self.camera.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
                 self.frame_time = time.monotonic()
                 self.camera_status.setText("CAMERA · live")
+        elif kind == "camera_state":
+            self.update_camera_state(value)
         elif kind == "progress":
             self.progress.setRange(0, value[1])
             self.progress.setValue(value[0])

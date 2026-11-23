@@ -11,6 +11,8 @@ final class CaptureNetworkService: ObservableObject {
     @Published private(set) var state: State = .disconnected
     @Published private(set) var message = "Disconnected"
     var onCaptureCommand: ((CaptureCommand) -> Void)?
+    var onCameraSettings: ((RemoteCameraSettings) -> Void)?
+    var onConnected: (() -> Void)?
 
     private var discovery: BonjourDiscovery?
     private var reconnectTask: Task<Void, Never>?
@@ -99,6 +101,17 @@ final class CaptureNetworkService: ObservableObject {
         socket = nil
         state = .disconnected
         message = "Disconnected"
+    }
+
+    func sendCameraState(_ state: [String: Any]) {
+        guard let socket, self.state == .connected else { return }
+        var payload = state
+        payload["type"] = "camera_state"
+        Task {
+            guard let data = try? JSONSerialization.data(withJSONObject: payload),
+                  let text = String(data: data, encoding: .utf8) else { return }
+            try? await socket.send(.string(text))
+        }
     }
 
     func send(result: Result<CaptureRecord, Error>, captureID: String) {
@@ -215,6 +228,9 @@ final class CaptureNetworkService: ObservableObject {
             previewEnabled = true
             state = .connected
             message = "Connected to Linux"
+            onConnected?()
+        case "camera_settings":
+            if let settings = wire.cameraSettings { onCameraSettings?(settings) }
         case "capture":
             guard let captureID = wire.captureID else { throw NetworkError.missingCaptureID }
             state = .connected
