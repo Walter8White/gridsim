@@ -130,7 +130,11 @@ final class CameraService: NSObject, ObservableObject {
         try next.lockForConfiguration()
         defer { next.unlockForConfiguration() }
         // Select a real format advertising the largest still dimensions; never invent 24/48 MP support.
-        guard let best = next.formats.max(by: { largest($0) < largest($1) }) else { throw CameraError.problem("No photo formats.") }
+        guard let best = next.formats.max(by: {
+            let leftPixels = largest($0), rightPixels = largest($1)
+            if leftPixels != rightPixels { return leftPixels < rightPixels }
+            return maximumFrameRate($0) < maximumFrameRate($1)
+        }) else { throw CameraError.problem("No photo formats.") }
         next.activeFormat = best
         next.videoZoomFactor = 1
         device = next; cameraID = next.uniqueID
@@ -156,6 +160,9 @@ final class CameraService: NSObject, ObservableObject {
     private func largest(_ format: AVCaptureDevice.Format) -> Int64 {
         format.supportedMaxPhotoDimensions.map { Int64($0.width) * Int64($0.height) }.max() ?? 0
     }
+    private func maximumFrameRate(_ format: AVCaptureDevice.Format) -> Double {
+        format.videoSupportedFrameRateRanges.map(\.maxFrameRate).max() ?? 0
+    }
     func selectCamera(_ id: String) {
         guard state == .ready, !passLocked, let next = cameras.first(where: { $0.uniqueID == id }) else { return }
         do { try configure(next); photogrammetry = false } catch { message = error.localizedDescription }
@@ -167,7 +174,9 @@ final class CameraService: NSObject, ObservableObject {
         do {
             if resolution.requiresDeferredDelivery { try await authorizePhotos() }
             guard state == .configuring else { return }
-            guard let format = d.formats.filter({ $0.supportedMaxPhotoDimensions.contains { $0.width == resolution.width && $0.height == resolution.height } }).max(by: { largest($0) < largest($1) }) else { return }
+            guard let format = d.formats
+                .filter({ $0.supportedMaxPhotoDimensions.contains { $0.width == resolution.width && $0.height == resolution.height } })
+                .max(by: { maximumFrameRate($0) < maximumFrameRate($1) }) else { return }
             let oldFormat = d.activeFormat
             let oldMaximum = output.maxPhotoDimensions
             let oldDeferred = output.isAutoDeferredPhotoDeliveryEnabled
@@ -476,7 +485,7 @@ private enum CameraError: LocalizedError {
     var errorDescription: String? { if case .problem(let text) = self { return text }; return nil }
 }
 
-// A compact 800 px JPEG at 20 fps keeps preview traffic separate from full-resolution stills.
+// Keep the control-station preview responsive; full-resolution still capture remains separate.
 nonisolated private final class PreviewDelegate: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unchecked Sendable {
     private let context = CIContext()
     private var lastFrame = CMTime.zero
@@ -486,7 +495,7 @@ nonisolated private final class PreviewDelegate: NSObject, AVCaptureVideoDataOut
 
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
         let timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
-        guard CMTimeGetSeconds(timestamp - lastFrame) >= 0.05,
+        guard CMTimeGetSeconds(timestamp - lastFrame) >= (1.0 / 30.0),
               let buffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
         lastFrame = timestamp
         let image = CIImage(cvPixelBuffer: buffer)

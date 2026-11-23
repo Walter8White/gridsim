@@ -5,6 +5,7 @@ import asyncio
 import sys
 import threading
 import time
+from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer, Signal, QObject, QEvent
 from PySide6.QtGui import QPixmap, QShortcut, QKeySequence
@@ -147,9 +148,22 @@ class Window(QMainWindow):
         root = QWidget()
         self.setCentralWidget(root)
         layout = QVBoxLayout(root)
-        heading = QLabel("DEPLOYA : ROBOTICS  /  CONTROL STATION" + (" — DEMO" if args.demo else ""))
-        heading.setStyleSheet("font: 900 25px 'DejaVu Sans Mono'; color: #d11f24; letter-spacing: -1px; padding: 8px 2px")
-        layout.addWidget(heading)
+        brand_row = QHBoxLayout()
+        heading = QLabel()
+        logo = QPixmap(str(Path(__file__).resolve().parent / "assets" / "deploya-wordmark.png"))
+        heading.setPixmap(logo.scaledToHeight(42, Qt.TransformationMode.SmoothTransformation))
+        heading.setAccessibleName("déploya:robotics")
+        brand_row.addWidget(heading)
+        brand_row.addSpacing(16)
+        product_name = QLabel("CONTROL STATION")
+        product_name.setStyleSheet("font: 700 19px Helvetica; color: #000000; letter-spacing: 1px")
+        brand_row.addWidget(product_name)
+        if args.demo:
+            demo_tag = QLabel("DEMO")
+            demo_tag.setStyleSheet("font: 700 11px 'DejaVu Sans Mono'; color: #DB000D; padding: 5px 9px; border: 1px solid #DB000D")
+            brand_row.addWidget(demo_tag)
+        brand_row.addStretch()
+        layout.addLayout(brand_row)
         bar = QHBoxLayout()
         self.detect = QPushButton("Detect connections")
         self.detect.clicked.connect(self.detect_all)
@@ -319,7 +333,7 @@ class Window(QMainWindow):
         split.addWidget(camera_box)
         split.setSizes([760, 700])
         stop = QPushButton("STOP ALL  ·  Esc")
-        stop.setStyleSheet("background: #d11f24; color: white; font-size: 20px; padding: 12px")
+        stop.setStyleSheet("background: #DB000D; color: white; font-size: 20px; padding: 12px")
         stop.clicked.connect(self.stop)
         actions = QHBoxLayout()
         actions.addWidget(stop, 1)
@@ -427,6 +441,8 @@ class Window(QMainWindow):
             maximum = state[hi] if isinstance(hi, str) else hi
             widget.blockSignals(True); widget.setRange(float(minimum), float(maximum))
             widget.setValue(float(state.get(key, minimum))); widget.blockSignals(False)
+        self.camera_status.setText(
+            f"CAMERA · live · PHOTO {state.get('resolution_id', '—')} · PC FEED UP TO 30 FPS")
         self.camera_settings_status.setText(
             f"iPhone camera {state.get('camera_state', 'unknown')} · "
             f"focus {'locked' if state.get('pass_locked') else 'available'} · "
@@ -518,7 +534,7 @@ def main():
         parser.error("The control station requires Python 3.11 or newer")
     app = QApplication(sys.argv[:1])
     app.setStyle("Fusion")
-    app.setStyleSheet("QWidget { background: #ffffff; color: #222222; font-family: 'DejaVu Sans Mono'; } QPushButton, QLineEdit, QSpinBox, QDoubleSpinBox { padding: 7px; border: 1px solid #d7d2d0; border-radius: 5px; background: #fff; } QPushButton { color: #cf2027; font-weight: bold; } QPushButton:disabled { color: #96908d; background: #f2f0ef; } QGroupBox { padding-top: 20px; font-weight: bold; border: 1px solid #e4dfdd; border-radius: 8px; margin-top: 8px; } QTabBar::tab { padding: 12px; color: #444; } QTabBar::tab:selected { color: #c91e24; border-bottom: 3px solid #d11f24; }")
+    app.setStyleSheet("QWidget { background: #ffffff; color: #000000; font-family: Helvetica, Arial, sans-serif; } QPushButton, QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox { padding: 7px; border: 1px solid #d7d7d7; border-radius: 5px; background: #fff; } QPushButton { color: #DB000D; font-weight: bold; } QPushButton:disabled { color: #999999; background: #f2f2f2; } QGroupBox { padding-top: 20px; font-weight: bold; border: 1px solid #e5e5e5; border-radius: 8px; margin-top: 8px; } QTabBar::tab { padding: 12px; color: #333333; } QTabBar::tab:selected { color: #DB000D; border-bottom: 3px solid #DB000D; }")
     bridge = Bridge(args)
     bridge.ready.wait(10)
     if not bridge.ready.is_set() or hasattr(bridge, "error"):

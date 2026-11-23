@@ -2,7 +2,7 @@ import SwiftUI
 import AVFoundation
 
 private enum DeployaStyle {
-    static let red = Color(red: 0.82, green: 0.12, blue: 0.13)
+    static let red = Color(red: 219/255, green: 0, blue: 13/255)
     static let ink = Color(red: 0.13, green: 0.13, blue: 0.14)
     static let paper = Color.white
 }
@@ -57,15 +57,11 @@ struct ContentView: View {
 
     private var header: some View {
         HStack(alignment: .center, spacing: 14) {
-            Text("DEPLOYA")
-                .font(.system(size: 23, weight: .black, design: .monospaced))
-                .tracking(-1.8)
-                .foregroundStyle(DeployaStyle.red)
-            Rectangle().fill(DeployaStyle.red).frame(width: 2, height: 25)
-            Text(": ROBOTICS")
-                .font(.system(size: 19, weight: .bold, design: .monospaced))
-                .tracking(-1.2)
-                .foregroundStyle(DeployaStyle.ink)
+            Image("DeployaWordmark")
+                .resizable()
+                .scaledToFit()
+                .frame(width: 220, height: 34)
+                .accessibilityLabel("déploya:robotics")
             Spacer(minLength: 8)
             HStack(spacing: 7) {
                 Circle().fill(connectionColor).frame(width: 9, height: 9)
@@ -76,7 +72,7 @@ struct ContentView: View {
             }
             .foregroundStyle(DeployaStyle.ink)
             .padding(.horizontal, 12).padding(.vertical, 9)
-            .background(Color(red: 0.96, green: 0.95, blue: 0.94), in: Capsule())
+            .background(Color(red: 0.96, green: 0.96, blue: 0.96), in: Capsule())
             .accessibilityLabel("Linux connection: \(connectionLabel)")
         }
         .padding(.horizontal, 22)
@@ -94,7 +90,7 @@ struct ContentView: View {
                     Image(systemName: camera.state == .denied ? "camera.slash" : "camera")
                         .font(.system(size: 32, weight: .medium))
                         .foregroundStyle(DeployaStyle.red)
-                    Text(camera.message ?? "INITIALIZING CAMERA")
+                    Text((camera.message ?? "INITIALIZING CAMERA").uppercased())
                         .font(.system(size: 12, weight: .bold, design: .monospaced))
                         .foregroundStyle(DeployaStyle.ink)
                         .multilineTextAlignment(.center)
@@ -102,6 +98,15 @@ struct ContentView: View {
                 .padding(22)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(.white.opacity(0.9))
+            }
+            if let resolution = camera.live?.selected_resolution.label {
+                Text("PHOTO · \(resolution.uppercased())")
+                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                    .foregroundStyle(DeployaStyle.ink)
+                    .padding(.horizontal, 11).padding(.vertical, 8)
+                    .background(.white.opacity(0.92), in: Capsule())
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                    .padding(12)
             }
             HStack(spacing: 8) {
                 Circle().fill(camera.state == .ready ? DeployaStyle.red : .gray).frame(width: 7, height: 7)
