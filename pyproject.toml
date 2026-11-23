@@ -11,7 +11,11 @@ dependencies = [
   "numpy>=1.26,<3",
   "PyYAML>=6.0,<7",
   "websockets>=12,<16",
+  "bleak>=0.21,<1",
 ]
+
+[project.optional-dependencies]
+station = ["PySide6-Essentials>=6.6,<7", "zaber-motion>=10,<11", "pyserial>=3.5,<4"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
