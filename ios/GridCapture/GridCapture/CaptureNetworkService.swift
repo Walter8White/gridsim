@@ -186,7 +186,10 @@ final class CaptureNetworkService: ObservableObject {
                 captureID: captureID,
                 targetPositionMM: wire.targetPositionMM,
                 measuredPositionMM: wire.measuredPositionMM,
-                receivedAt: Date()
+                receivedAt: Date(),
+                passIndex: wire.passIndex,
+                passCaptureIndex: wire.passCaptureIndex,
+                xOffsetCM: wire.xOffsetCM ?? wire.xOffsetM.map { $0 * 100 }
             ))
         default:
             break
