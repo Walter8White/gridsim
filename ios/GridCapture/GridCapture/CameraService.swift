@@ -3,6 +3,7 @@ import Combine
 import Foundation
 import ImageIO
 import Photos
+import UIKit
 import UniformTypeIdentifiers
 
 @MainActor
@@ -120,7 +121,7 @@ final class CameraService: NSObject, ObservableObject {
             videoOutput.alwaysDiscardsLateVideoFrames = true
             videoOutput.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
             let delegate = PreviewDelegate { [weak self] data in
-                Task { @MainActor in self?.onPreviewFrame?(data) }
+                Task { @MainActor [weak self] in self?.onPreviewFrame?(data) }
             }
             previewDelegate = delegate
             videoOutput.setSampleBufferDelegate(delegate, queue: DispatchQueue(label: "com.deploya.gridcapture.preview"))
