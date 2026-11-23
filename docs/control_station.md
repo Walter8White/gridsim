@@ -55,9 +55,11 @@ from centre control the signed jogging demand. Release to centre the dial and
 stop requesting motion. Tab changes and application focus loss also release
 all dials. Mouse wheel and keyboard input cannot latch a jog demand.
 
-Each motor has its own speed field: **0.001–100 mm/s** for Zaber and
-**1–100% controller speed** for each PINE motor, initially set to 1. The Zaber
-dial scales the selected speed by its deflection. PINE uses bounded
+The Zaber is shown as a vertical linear slider, with **0 mm at the top** and
+**1500 mm at the bottom**. Hold and drag it to request an absolute target;
+release to stop. This assumes the stage is calibrated so its usable travel is
+0–1500 mm. Each motor has its own speed field: **0.001–100 mm/s** for Zaber and
+**1–100% controller speed** for each PINE motor, initially set to 1. The slider moves the Zaber at the selected speed. PINE uses bounded
 **1–10 raw-position-unit** steps at the selected controller speed; the small
 steps and BLE exchange rate also limit its effective travel speed. PINE's last small step may complete after
 release or a BLE disconnect; no undocumented velocity/stop command is sent.

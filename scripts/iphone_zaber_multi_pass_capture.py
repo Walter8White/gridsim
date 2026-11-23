@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from iphone_zaber_capture import ZaberStage, positions, receive_capture_result, utc_now
+from capture_common import ZaberStage, positions, receive_capture_result, utc_now
 
 
 def parse_args() -> argparse.Namespace:

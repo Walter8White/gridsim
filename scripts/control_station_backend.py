@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
-from iphone_zaber_capture import positions, receive_capture_result, utc_now
+from capture_common import positions, receive_capture_result, utc_now
 from pine2_ble import find_pine, CHARACTERISTIC_UUID
 
 

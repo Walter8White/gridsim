@@ -12,6 +12,22 @@ final class CaptureNetworkService: ObservableObject {
     @Published private(set) var message = "Disconnected"
     var onCaptureCommand: ((CaptureCommand) -> Void)?
 
+    private var previewEnabled = false
+    private var previewSending = false
+
+    func sendPreview(_ jpeg: Data) {
+        guard previewEnabled, state == .connected, !previewSending, let socket else { return }
+        previewSending = true
+        Task {
+            defer { previewSending = false }
+            do {
+                let data = try JSONSerialization.data(withJSONObject: ["type": "preview", "jpeg": jpeg.base64EncodedString()])
+                guard let text = String(data: data, encoding: .utf8) else { return }
+                try await socket.send(.string(text))
+            } catch { }
+        }
+    }
+
     private var socket: URLSessionWebSocketTask?
     private var receiveTask: Task<Void, Never>?
 
@@ -34,6 +50,7 @@ final class CaptureNetworkService: ObservableObject {
     }
 
     func disconnect() {
+        previewEnabled = false
         receiveTask?.cancel()
         receiveTask = nil
         socket?.cancel(with: .normalClosure, reason: nil)
@@ -152,6 +169,7 @@ final class CaptureNetworkService: ObservableObject {
         let wire = try JSONDecoder().decode(IncomingMessage.self, from: data)
         switch wire.type {
         case "hello":
+            previewEnabled = true
             state = .connected
             message = "Connected to Linux"
         case "capture":

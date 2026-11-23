@@ -9,6 +9,9 @@ import UniformTypeIdentifiers
 final class CameraService: NSObject, ObservableObject {
     enum State: Equatable { case idle, configuring, ready, capturing, denied, failed }
     let session = AVCaptureSession()
+    var onPreviewFrame: ((Data) -> Void)?
+    private let videoOutput = AVCaptureVideoDataOutput()
+    private var previewDelegate: PreviewDelegate?
     @Published private(set) var state: State = .idle
     @Published private(set) var message: String?
     @Published private(set) var lastCapture: CaptureRecord?
@@ -111,6 +114,17 @@ final class CameraService: NSObject, ObservableObject {
         if !session.outputs.contains(output) {
             guard session.canAddOutput(output) else { throw CameraError.problem("Photo output unavailable.") }
             session.addOutput(output)
+        }
+        if !session.outputs.contains(videoOutput) {
+            guard session.canAddOutput(videoOutput) else { throw CameraError.problem("Preview output unavailable.") }
+            videoOutput.alwaysDiscardsLateVideoFrames = true
+            videoOutput.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
+            let delegate = PreviewDelegate { [weak self] data in
+                Task { @MainActor in self?.onPreviewFrame?(data) }
+            }
+            previewDelegate = delegate
+            videoOutput.setSampleBufferDelegate(delegate, queue: DispatchQueue(label: "com.deploya.gridcapture.preview"))
+            session.addOutput(videoOutput)
         }
         try next.lockForConfiguration()
         defer { next.unlockForConfiguration() }
@@ -418,3 +432,24 @@ private enum CameraError: LocalizedError {
     var errorDescription: String? { if case .problem(let text) = self { return text }; return nil }
 }
 
+// A small JPEG at 5 fps keeps preview traffic separate from full-resolution stills.
+nonisolated private final class PreviewDelegate: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unchecked Sendable {
+    private let context = CIContext()
+    private var lastFrame = CMTime.zero
+    private let deliver: @Sendable (Data) -> Void
+
+    init(deliver: @escaping @Sendable (Data) -> Void) { self.deliver = deliver }
+
+    func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
+        let timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+        guard CMTimeGetSeconds(timestamp - lastFrame) >= 0.2,
+              let buffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+        lastFrame = timestamp
+        let image = CIImage(cvPixelBuffer: buffer)
+        let scale = min(1, 640 / max(image.extent.width, image.extent.height))
+        let scaled = image.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+        guard let cgImage = context.createCGImage(scaled, from: scaled.extent),
+              let data = UIImage(cgImage: cgImage).jpegData(compressionQuality: 0.55) else { return }
+        deliver(data)
+    }
+}
