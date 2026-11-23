@@ -140,6 +140,7 @@ class Window(QMainWindow):
         self.connected = set()
         self.busy = False
         self.phone = False
+        self.station_ready = False
         self.frame_time = 0
         self.setWindowTitle("GridSim · Motor control station" + (" · DEMO" if args.demo else ""))
         self.resize(1200, 850)
@@ -168,9 +169,16 @@ class Window(QMainWindow):
             self.ports.append(spin)
             bar.addWidget(spin)
         layout.addLayout(bar)
+        status_row = QHBoxLayout()
         self.connection_label = QLabel("Motors disconnected · iPhone waiting")
-        layout.addWidget(self.connection_label)
-        layout.addWidget(QLabel(f"iPhone: open GridCapture on the same LAN → enter this Linux station’s IP, port {args.port} → Connect"))
+        status_row.addWidget(self.connection_label, 1)
+        self.phone_connect = QPushButton("Connect")
+        self.phone_connect.setEnabled(False)
+        self.phone_connect.setToolTip("Open GridCapture on the iPhone; it will connect automatically")
+        self.phone_connect.clicked.connect(lambda: self.log.appendPlainText("GridCapture searches for this station automatically."))
+        status_row.addWidget(self.phone_connect)
+        layout.addLayout(status_row)
+        layout.addWidget(QLabel(f"iPhone: open GridCapture on the same LAN → it will find this Linux station automatically over Bonjour (or enter IP manually)"))
         split = QSplitter()
         layout.addWidget(split, 1)
         self.tabs = QTabWidget()
@@ -343,13 +351,19 @@ class Window(QMainWindow):
             box.setEnabled(key in self.connected and not self.busy)
         self.record.setEnabled(self.phone and "zaber" in self.connected and not self.busy)
         self.detect.setEnabled(not self.busy)
-        self.connection_label.setText("Motors: " + (", ".join(sorted(self.connected)) or "disconnected") + " · iPhone: " + ("connected" if self.phone else "waiting"))
+        self.connection_label.setText("Motors: " + (", ".join(sorted(self.connected)) or "disconnected") + " · iPhone: " + ("connected" if self.phone else "ready to discover" if self.station_ready else "waiting"))
+        self.phone_connect.setEnabled(self.phone or self.station_ready)
+        self.phone_connect.setText("Connected" if self.phone else "Connect")
+        self.phone_connect.setStyleSheet("background: #2476c7; color: white;" if self.phone else "background: #28a66a; color: white;" if self.station_ready else "background: #39414c; color: #89929e;")
 
     def on_event(self, kind, value):
         if getattr(self, "closing", False) and kind != "status":
             return
         if kind == "status":
             self.log.appendPlainText(value)
+        elif kind == "station_ready":
+            self.station_ready = bool(value)
+            self.refresh()
         elif kind == "connected":
             self.connected = set(value)
             self.refresh()

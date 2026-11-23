@@ -72,6 +72,32 @@ class Station:
     async def start(self, host, port):
         import websockets
         self.server = await websockets.serve(self.phone_client, host, port, max_size=100*1024*1024)
+        self.mdns = None
+        try:
+            from zeroconf import ServiceInfo, Zeroconf, IPVersion
+            import ipaddress
+            import socket
+            from zeroconf.utils.ip_addresses import get_all_addresses
+            packed = list({socket.inet_aton(address) for address in get_all_addresses()
+                           if ipaddress.ip_address(address).version == 4
+                           and ipaddress.ip_address(address).is_private
+                           and not ipaddress.ip_address(address).is_loopback})
+            if packed:
+                service_name = "GridCapture Control._gridsim-control._tcp.local."
+                info = ServiceInfo("_gridsim-control._tcp.local.", service_name,
+                    addresses=packed, port=self.server.sockets[0].getsockname()[1],
+                    properties={"path": "/", "protocol": "websocket"},
+                    server=socket.gethostname().split(".")[0] + ".local.")
+                self.mdns = Zeroconf(ip_version=IPVersion.V4Only)
+                self.mdns.register_service(info)
+                self.emit("station_ready", True)
+                self.status("Bonjour discovery active: GridCapture can connect automatically")
+            else:
+                self.emit("station_ready", False)
+                self.status("No LAN IPv4 address for Bonjour; use manual iPhone address")
+        except Exception as exc:
+            self.emit("station_ready", False)
+            self.status(f"Bonjour unavailable ({exc}); use manual iPhone address")
         self.ticker = asyncio.create_task(self.tick())
         self.watchdog = asyncio.create_task(self.watch_deadman())
         self.status(f"Listening for GridCapture on port {port}" + (" — DEMO: simulated motors" if self.demo else ""))
@@ -446,6 +472,8 @@ class Station:
         await asyncio.gather(self.ticker, self.watchdog, return_exceptions=True)
         self.server.close()
         await self.server.wait_closed()
+        if self.mdns:
+            self.mdns.close()
         if self.pine:
             await self.pine.disconnect()
         if self.zaber:

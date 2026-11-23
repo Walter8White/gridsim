@@ -34,13 +34,14 @@ filter. Legacy Binary devices need to be configured for ASCII first. Linux
 must grant your account serial-port access and Bluetooth must be enabled.
 Detection never intentionally moves motors.
 
-Build and install the updated `ios/GridCapture` app using Xcode on a Mac.
-Connect the iPhone and workstation to the same local network. In GridCapture,
-enter the workstation IP and press **Connect**, accepting camera and local
-network permissions. Use `hostname -I` on Linux to find the IP. The station
+Install Python Bonjour support through `python -m pip install -e ".[station]"`.
+The Linux station advertises `_gridsim-control._tcp` using Bonjour/mDNS. Build
+and install the updated `ios/GridCapture` app using Xcode on a Mac. On launch,
+GridCapture searches for the station and connects automatically, retrying every
+five seconds if Linux is not ready yet. Accept the iOS Local Network prompt.
+Manual IP entry remains available if Bonjour discovery is blocked. Use `hostname -I` on Linux to find the IP. The station
 listens on port **8765**; do not run another capture script on that port.
-Use `--host` and `--port` to change the listener. This is a local network
-connection, not automatic camera access over an iPhone USB cable.
+Use `--host` and `--port` to change the listener. Discovery requires both devices to see each other on the local network; some iPhone Personal Hotspot and client-isolation configurations block Bonjour. In that case, use the manual IP connection.
 
 The camera panel remains visible beside both tabs. Preview uses small JPEGs
 at up to five frames per second; recorded photos retain full resolution.

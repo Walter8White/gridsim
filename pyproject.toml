@@ -15,7 +15,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-station = ["PySide6-Essentials>=6.6,<7", "zaber-motion>=10,<11", "pyserial>=3.5,<4"]
+station = ["PySide6-Essentials>=6.6,<7", "zaber-motion>=10,<11", "pyserial>=3.5,<4", "zeroconf>=0.132,<1"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

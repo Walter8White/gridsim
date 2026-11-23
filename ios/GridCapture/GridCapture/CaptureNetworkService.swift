@@ -12,6 +12,9 @@ final class CaptureNetworkService: ObservableObject {
     @Published private(set) var message = "Disconnected"
     var onCaptureCommand: ((CaptureCommand) -> Void)?
 
+    private var discovery: BonjourDiscovery?
+    private var reconnectTask: Task<Void, Never>?
+    private var manuallyDisconnected = false
     private var previewEnabled = false
     private var previewSending = false
 
@@ -31,8 +34,40 @@ final class CaptureNetworkService: ObservableObject {
     private var socket: URLSessionWebSocketTask?
     private var receiveTask: Task<Void, Never>?
 
+    func startDiscovery() {
+        manuallyDisconnected = false
+        guard discovery == nil else { return }
+        let serviceBrowser = BonjourDiscovery { [weak self] host, port in
+            Task { @MainActor in
+                guard let self, !self.manuallyDisconnected,
+                      self.state == .disconnected || self.state == .failed else { return }
+                self.connect(to: "\(host):\(port)")
+            }
+        }
+        discovery = serviceBrowser
+        serviceBrowser.start()
+        message = "Searching for Linux control station…"
+        scheduleReconnect()
+    }
+
+    private func scheduleReconnect() {
+        reconnectTask?.cancel()
+        reconnectTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(5))
+                guard let self, !self.manuallyDisconnected,
+                      self.state == .disconnected || self.state == .failed else { continue }
+                if let address = UserDefaults.standard.string(forKey: "linuxAddress"), !address.isEmpty {
+                    self.connect(to: address)
+                }
+            }
+        }
+    }
+
     func connect(to address: String) {
-        disconnect()
+        manuallyDisconnected = false
+        reconnectTask?.cancel()
+        disconnect(preserveDiscovery: true)
         guard let url = Self.webSocketURL(from: address) else {
             state = .failed
             message = "Invalid Linux address"
@@ -49,7 +84,14 @@ final class CaptureNetworkService: ObservableObject {
         }
     }
 
-    func disconnect() {
+    func disconnect(preserveDiscovery: Bool = false) {
+        if !preserveDiscovery {
+            manuallyDisconnected = true
+            discovery?.stop()
+            discovery = nil
+            reconnectTask?.cancel()
+            reconnectTask = nil
+        }
         previewEnabled = false
         receiveTask?.cancel()
         receiveTask = nil
@@ -162,6 +204,7 @@ final class CaptureNetworkService: ObservableObject {
             guard self.socket === socket else { return }
             state = .failed
             message = "Connection lost: \(error.localizedDescription)"
+            scheduleReconnect()
         }
     }
 
@@ -218,3 +261,38 @@ private extension SHA256.Digest {
     var hexString: String { map { String(format: "%02x", $0) }.joined() }
 }
 
+
+
+private final class BonjourDiscovery: NSObject, NetServiceBrowserDelegate, NetServiceDelegate {
+    private let browser = NetServiceBrowser()
+    private let found: (String, Int) -> Void
+    private var services: [NetService] = []
+
+    init(found: @escaping (String, Int) -> Void) {
+        self.found = found
+        super.init()
+        browser.delegate = self
+    }
+
+    func start() {
+        browser.searchForServices(ofType: "_gridsim-control._tcp.", inDomain: "local.")
+    }
+
+    func stop() {
+        browser.stop()
+        services.forEach { $0.stop() }
+        services.removeAll()
+    }
+
+    func netServiceBrowser(_ browser: NetServiceBrowser, didFind service: NetService, moreComing: Bool) {
+        service.delegate = self
+        services.append(service)
+        service.resolve(withTimeout: 8)
+    }
+
+    func netServiceDidResolveAddress(_ sender: NetService) {
+        guard let host = sender.hostName?.trimmingCharacters(in: CharacterSet(charactersIn: ".")),
+              !host.isEmpty, sender.port > 0 else { return }
+        found(host, sender.port)
+    }
+}

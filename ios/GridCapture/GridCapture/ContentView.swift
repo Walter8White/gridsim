@@ -35,6 +35,7 @@ struct ContentView: View {
                     network.send(result: result, captureID: command.captureID)
                 }
             }
+            network.startDiscovery()
             await camera.start()
             lidar.refreshAvailability()
             motion.start()
