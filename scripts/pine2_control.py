@@ -85,7 +85,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", help="USB serial device; auto-detects a CP210x adapter by default.")
     parser.add_argument("--baud", type=int, default=115200, help="USB serial baud rate.")
-    parser.add_argument("--motor", nargs=2, type=int, default=(1, 3), metavar=("MOTOR_A", "MOTOR_B"))
+    parser.add_argument("--motor", nargs=2, type=int, default=(1, 2), metavar=("MOTOR_A", "MOTOR_B"))
     parser.add_argument("--step", type=int, default=1, help="Raw position increment for each test move.")
     parser.add_argument("--move-small", action="store_true", help="Move each selected motor by --step from its current position.")
     return parser.parse_args()

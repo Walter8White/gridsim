@@ -29,7 +29,7 @@ async def find_pine(address: str | None) -> Any:
 async def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--address", help="BLE address; otherwise scan by the PINE service UUID.")
-    parser.add_argument("--motor", nargs=2, type=int, default=(1, 3), metavar=("MOTOR_A", "MOTOR_B"))
+    parser.add_argument("--motor", nargs=2, type=int, default=(1, 2), metavar=("MOTOR_A", "MOTOR_B"))
     parser.add_argument("--step", type=int, default=1, help="Position increment for --move-small.")
     parser.add_argument("--move-small", action="store_true", help="Move each selected motor by --step at 1%% speed.")
     args = parser.parse_args()
